@@ -43,8 +43,9 @@ Each function that was located, or generated, and considered to be a likely cand
 Labels are applied to code functions in the following way:
 
 - **`java`**
-  1. Enure that the project has a dependency on the Java library `appmap-java`.
-  2. Add the following Java annotation: `@appmap-java('<labelname>')`
+  1. Ensure that the project has a Maven/Gradle dependency on `com.appland:appmap-annotation`.
+  2. Add the import `import com.appland.appmap.annotation.Labels;` at the top of the file.
+  3. Add the annotation `@Labels("<labelname>")` directly above the method definition.
 - **`ruby`**
   1. On the line directly before the code function, insert line that begins with the comment: `# @label <label>`, or for multiple labels: `# @labels <label1> <label2>`
 - **`python`**

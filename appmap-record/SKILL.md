@@ -7,34 +7,33 @@ correctness, and design.
 
 ## When to use
 
-Use this skill to record AppMap data from tests, ad-hoc programs, or a running application (typically via HTTP routes)
+Use this skill when the user or an agent wants to:
+- Record AppMap data from tests, ad-hoc programs, or a running application
+- Troubleshoot why AppMap recording is not producing output
 
 ## General workflow
 
-1. **Check installation** of the AppMap agent for the project's language.
+1. **Verify** the AppMap agent is installed for the project's language.
 2. **Run** tests or the application with AppMap enabled.
 3. **Find** recorded data in `tmp/appmap/` (default output directory).
 
----
-
 ## Configuration (`appmap.yml`)
 
-Every language uses an `appmap.yml` file in the project root. The core
-structure is similar across languages:
+A default `appmap.yml` is auto-created by each language agent if none exists.
+You do not need to create this file. It is documented here for reference only.
 
 ```yaml
-name: my_project # Project name (required)
-appmap_dir: tmp/appmap # Output directory (default: tmp/appmap)
+name: my_project          # Project name (required)
+appmap_dir: tmp/appmap     # Output directory (default: tmp/appmap)
 packages:
-  - path: app # Source code path to instrument
-    exclude:
-      - SomeClass # Exclude specific classes/methods
-    shallow: false # When true, only record entry into the package
+- path: app                # Source code path to instrument
+  exclude:
+  - SomeClass              # Exclude specific classes/methods
+  shallow: false           # When true, only record entry into the package
 ```
 
-If this file does not exist, a default one will be created by each agent. So, you don't need to create this file if it doesn't exist. Information about it is simply provided here for your reference.
-
-Language-specific differences are noted in each section below. The `packages` section has the most variation.
+Language-specific differences are noted in each section below. The `packages`
+section has the most variation.
 
 ---
 
@@ -49,12 +48,12 @@ The `appmap` gem should be present in the `test` and `development` bundles.
 ```yaml
 name: my_project
 packages:
-  - path: app
-  - gem: activerecord # Record a dependency gem
-    shallow: true # Default for gem entries
+- path: app
+- gem: activerecord        # Record a dependency gem
+  shallow: true            # Default for gem entries
 exclude:
-  - MyClass#my_instance_method
-  - MyClass.my_class_method
+- MyClass#my_instance_method
+- MyClass.my_class_method
 ```
 
 ### Record tests
@@ -89,6 +88,40 @@ Enabled by default in development. Control with `APPMAP_RECORD_REMOTE=true|false
 
 See https://appmap.io/docs/reference/appmap-ruby.html
 
+### Troubleshooting
+
+**No AppMaps generated from tests:**
+- The `appmap` gem must be the **first gem** listed in the `Gemfile`, or it
+  will not properly instrument other dependencies.
+- For RSpec, ensure `appmap/rspec` is required in `spec_helper.rb` **before**
+  the Rails environment loads.
+- For Minitest, ensure `appmap/minitest` is required in `test_helper.rb`
+  **before** the Rails environment loads.
+- Verify recording is not disabled: check that `APPMAP=false` and
+  `APPMAP_RECORD_RSPEC=false` / `APPMAP_RECORD_MINITEST=false` are not set.
+
+**No AppMaps from HTTP requests:**
+- Request recording is only auto-enabled when `RAILS_ENV=development`. In
+  other environments, set `APPMAP_RECORD_REQUESTS=true` explicitly.
+- Run `rake middleware` to confirm AppMap middleware is in the Rack stack.
+
+**Debugging environment variables:**
+
+| Variable | Purpose |
+|---|---|
+| `APPMAP=false` | Disable all recording |
+| `APPMAP_PROFILE_HOOK=true` | Diagnostic timing info on gem instrumentation |
+| `APPMAP_LOG_HOOK=true` | Detailed instrumentation hook logging (writes to `appmap_hook.log`) |
+| `APPMAP_LOG_HOOK_FILE=stderr` | Redirect hook logs to stderr or a custom file |
+
+**Disabling recording for specific tests:**
+Use the `appmap: false` RSpec tag:
+```ruby
+describe 'Module', appmap: false do
+  # AppMap recording disabled for this group
+end
+```
+
 ---
 
 ## Python
@@ -102,11 +135,11 @@ The `appmap` package should be installed and available.
 ```yaml
 name: my_python_app
 packages:
-  - path: app.mod1 # Use Python module notation
-    shallow: true
-  - path: app.mod2
-    exclude:
-      - MyClass # Note that app.mod2 does not need to be repeated here
+- path: app.mod1            # Use Python module notation
+  shallow: true
+- path: app.mod2
+  exclude:
+  - MyClass                 # Note that app.mod2 does not need to be repeated here
 ```
 
 ### Record tests
@@ -122,7 +155,6 @@ appmap-python python -m unittest  # Output: tmp/appmap/unittest/
 ### Record HTTP requests
 
 Automatic for Django, Flask, and FastAPI when running in development mode:
-
 - **Django**: `DEBUG = True` in settings.py
 - **Flask**: run with `--debug`
 - **FastAPI/uvicorn**: run with `--reload`
@@ -140,15 +172,47 @@ Flask `--debug`). Force with `APPMAP_RECORD_REMOTE=true`.
 
 ### Environment variables
 
-| Variable                             | Purpose                                                                                                                              |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `APPMAP_CONFIG=path/to/appmap.yml`   | Custom config file path                                                                                                              |
-| `APPMAP_DISPLAY_PARAMS=true\|false`  | Capture and emit parameter/return values (default: false). Note that these values will be recorded by default for labeled functions. |
-| `APPMAP_LOG_LEVEL=DEBUG`             | Set log level                                                                                                                        |
+| Variable | Purpose |
+|---|---|
+| `APPMAP_CONFIG=path/to/appmap.yml` | Custom config file path |
+| `APPMAP_DISPLAY_PARAMS=true\|false` | Capture and emit parameter/return values (default: false). Note that these values will be recorded by default for labeled functions. |
+| `APPMAP_LOG_LEVEL=DEBUG` | Set log level |
 
 ### Advanced usage
 
 See https://appmap.io/docs/reference/appmap-python.html
+
+### Troubleshooting
+
+**No AppMaps generated:**
+- Ensure `APPMAP=true` is set, or use the `appmap-python` wrapper which sets
+  it automatically. Without it, AppMap's conditional imports are skipped and
+  no recording occurs.
+- Check that `APPMAP_RECORD_PYTEST=false` or `APPMAP_RECORD_UNITTEST=false`
+  are not set.
+
+**`RuntimeError: "Recording already in progress"`:**
+- This occurs when `APPMAP_RECORD_PROCESS=true` conflicts with another
+  recording method (requests, remote, tests). Process recording is
+  incompatible with other recording types.
+- Fix: disable request recording when using process recording:
+  ```sh
+  appmap-python --record process --no-record requests flask --app main.app
+  ```
+
+**Remote recording security warning in non-development environments:**
+- The agent warns when remote recording is enabled outside development mode.
+  Development is auto-detected via Django `DEBUG=True` or Flask `--debug`.
+- To force in other environments: `APPMAP_RECORD_REMOTE=true`.
+
+**Debugging:**
+- Set `APPMAP_LOG_LEVEL=DEBUG` for verbose output.
+- Set `APPMAP_DISABLE_LOG_FILE=true` to prevent automatic log file creation
+  (logs go to stderr instead).
+- Use `appmap-python --enable-log` to explicitly create log files.
+
+**Supported versions:** Python 3.8-3.12, Django 3.2-<5, Flask 2-3,
+FastAPI ~0.110.0, pytest ~6, SQLAlchemy ~1.
 
 ---
 
@@ -171,13 +235,13 @@ npx appmap-node <your command>
 Auto-generated if missing. Typical `appmap.yml`:
 
 ```yaml
-name: MyApp # Auto-detected from package.json
+name: MyApp                 # Auto-detected from package.json
 appmap_dir: tmp/appmap
 packages:
-  - path: .
-    exclude:
-      - node_modules
-      - .yarn
+- path: .
+  exclude:
+  - node_modules
+  - .yarn
 ```
 
 ### Record tests
@@ -223,6 +287,20 @@ start/stop recordings while the app is running.
 
 See https://appmap.io/docs/reference/appmap-node.html
 
+### Troubleshooting
+
+**No AppMaps generated or unexpected behavior:**
+- Ensure you are running the latest version: `npx appmap-node@latest`.
+- If you modify `NODE_OPTIONS` in your launch command, `appmap-node` **must
+  come after** the modification. Getting this order wrong is a common cause
+  of silent failures. See the "Record tests" section above for examples.
+
+**Process recording not created when other recorders are active:**
+- By default, process recording is suppressed when test or request recording
+  is active. To force it: `APPMAP_RECORDER_PROCESS_ALWAYS=true`.
+
+**For other issues:** File a report at https://github.com/getappmap/appmap-node.
+
 ---
 
 ## Java
@@ -245,11 +323,11 @@ name: MyProject
 language: java
 appmap_dir: tmp/appmap
 packages:
-  - path: com.mycorp.myproject
-    exclude:
-      - com.mycorp.myproject.MyClass#MyMethod
-  - path: org.springframework.web
-    shallow: true
+- path: com.mycorp.myproject
+  exclude:
+  - com.mycorp.myproject.MyClass#MyMethod
+- path: org.springframework.web
+  shallow: true
 ```
 
 ### Record tests with Maven
@@ -321,17 +399,69 @@ Requires a servlet container (Tomcat, Jetty, etc.). Start the app with the
 
 ### System properties
 
-| Property                    | Purpose                | Default        |
-| --------------------------- | ---------------------- | -------------- |
-| `appmap.config.file`        | Config file path       | `appmap.yml`   |
-| `appmap.output.directory`   | Output directory       | `./tmp/appmap` |
-| `appmap.recording.auto`     | Auto-record on boot    | `false`        |
-| `appmap.recording.requests` | Record HTTP requests   | `true`         |
-| `appmap.record.private`     | Record private methods | `false`        |
-| `appmap.debug`              | Enable debug logging   | disabled       |
+| Property | Purpose | Default |
+|---|---|---|
+| `appmap.config.file` | Config file path | `appmap.yml` |
+| `appmap.output.directory` | Output directory | `./tmp/appmap` |
+| `appmap.recording.auto` | Auto-record on boot | `false` |
+| `appmap.recording.requests` | Record HTTP requests | `true` |
+| `appmap.record.private` | Record private methods | `false` |
+| `appmap.debug` | Enable debug logging | disabled |
 
 ### Advanced usage
 
 - Java agent: https://appmap.io/docs/reference/appmap-java.html
 - Maven plugin: https://appmap.io/docs/reference/appmap-maven-plugin.html
 - Gradle plugin: https://appmap.io/docs/reference/appmap-gradle-plugin.html
+
+### Troubleshooting
+
+**`NoClassDefFoundError: com/appland/appmap/runtime/HookFunctions`:**
+- Occurs in application servers with modular class loading (WildFly, Tomcat,
+  WebSphere, WebLogic, GlassFish). The agent's classes become inaccessible
+  due to class loader isolation.
+- Fix: expose `com.appland.appmap.runtime` through the server's class loading
+  configuration. Example for WildFly:
+  ```
+  -Djboss.modules.system.pkgs=org.jboss.byteman,com.appland.appmap.runtime
+  ```
+
+**`-javaagent` must come before `-jar`:**
+- When using `java -jar`, the `-javaagent` argument must appear **before**
+  `-jar` or the agent will not load.
+
+**No `tmp/appmap` directory created (Maven):**
+- Verify the `prepare-agent` goal is executing during the build.
+- Confirm the Surefire plugin has `forkCount > 0` (not `0`).
+- If `argLine` is set in Surefire config, it must include `@{argLine}`:
+  ```xml
+  <argLine>@{argLine} --illegal-access=permit</argLine>
+  ```
+
+**No `$buildDir/appmap` directory created (Gradle):**
+- Verify the `appmap` task is explicitly called: `gradle appmap test`.
+- Verify the JVM fork propagates the `javaagent` argument.
+
+**Empty or minimal `.appmap.json` files:**
+- The agent is running but no classes matching the `appmap.yml` packages
+  config are being executed. Adjust the `packages` entries to match the code
+  paths exercised by your tests.
+
+**"The forked VM terminated without properly saying goodbye" (Maven/Gradle):**
+- Usually caused by an invalid `appmap.yml` configuration.
+- Check the agent log at `tmp/appmap/agent.log` (Maven) or
+  `$buildDir/appmap/agent.log` (Gradle).
+- For Maven, also check Surefire dumpstream files at
+  `target/surefire-reports/*.dumpstream`.
+
+**Tests fail only with agent attached:**
+- File a report at https://github.com/getappmap/appmap-java/issues with:
+  full `appmap.yml`, exact run command, complete output, and any dumpstream
+  files.
+
+**Debugging:**
+- Set `-Dappmap.debug` to enable debug logging.
+- Maven/Gradle plugins support `debug` parameter with comma-separated flags:
+  `info`, `hooks`, `http`, `locals`.
+- Debug logs default to `tmp/appmap/agent.log` (configurable via `debugFile`).
+- Validate Gradle config with: `gradle appmap-validate-config`.

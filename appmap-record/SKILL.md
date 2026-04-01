@@ -137,14 +137,20 @@ packages:
 
 ### Record tests
 
-```sh
-# pytest (automatic plugin, no config needed)
-pytest
-# Output: tmp/appmap/pytest/
+Use the `appmap-python` wrapper to run tests. It sets `APPMAP=true` and
+ensures instrumentation is properly initialized.
 
-# unittest (automatic for TestCase subclasses)
-python -m unittest
+```sh
+# Preferred - via appmap-python wrapper
+appmap-python pytest              # Output: tmp/appmap/pytest/
+appmap-python python -m unittest  # Output: tmp/appmap/unittest/
+
+# Also works - explicit env var
+APPMAP=true pytest
 ```
+
+Without `APPMAP=true`, AppMap's conditional imports are skipped and no
+recording occurs.
 
 ### Record HTTP requests
 
@@ -177,6 +183,7 @@ Flask `--debug`). Force with `APPMAP_RECORD_REMOTE=true`.
 | `APPMAP_RECORD_REMOTE=true\|false` | Toggle remote recording |
 | `APPMAP_RECORD_PROCESS=true` | Record entire process |
 | `APPMAP_CONFIG=path/to/appmap.yml` | Custom config file path |
+| `APPMAP_DISPLAY_PARAMS=true\|false` | Capture and emit parameter/return values (default: false). Note that these values will be recorded by default for labeled functions. |
 | `APPMAP_LOG_LEVEL=DEBUG` | Set log level |
 
 ### Advanced usage

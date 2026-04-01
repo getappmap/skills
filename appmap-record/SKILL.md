@@ -7,65 +7,54 @@ correctness, and design.
 
 ## When to use
 
-Use this skill when the user wants to:
-- Record AppMap data from tests or a running application
-- Set up AppMap instrumentation for a project
-- Configure `appmap.yml`
-- Understand how to enable/disable AppMap recording
+Use this skill to record AppMap data from tests, ad-hoc programs, or a running application (typically via HTTP routes)
 
 ## General workflow
 
-1. **Install** the AppMap agent for the project's language.
-2. **Configure** `appmap.yml` in the project root.
-3. **Run** tests or the application with AppMap enabled.
-4. **Find** recorded data in `tmp/appmap/` (default output directory).
+1. **Check installation** of the AppMap agent for the project's language.
+2. **Run** tests or the application with AppMap enabled.
+3. **Find** recorded data in `tmp/appmap/` (default output directory).
 
 ---
 
 ## Configuration (`appmap.yml`)
 
 Every language uses an `appmap.yml` file in the project root. The core
-structure is the same across languages:
+structure is similar across languages:
 
 ```yaml
-name: my_project          # Project name (required)
-appmap_dir: tmp/appmap     # Output directory (default: tmp/appmap)
+name: my_project # Project name (required)
+appmap_dir: tmp/appmap # Output directory (default: tmp/appmap)
 packages:
-- path: app                # Source code path to instrument
-  exclude:
-  - SomeClass              # Exclude specific classes/methods
-  shallow: false           # When true, only record entry into the package
+  - path: app # Source code path to instrument
+    exclude:
+      - SomeClass # Exclude specific classes/methods
+    shallow: false # When true, only record entry into the package
 ```
 
-Language-specific differences are noted in each section below.
+If this file does not exist, a default one will be created by each agent. So, you don't need to create this file if it doesn't exist. Information about it is simply provided here for your reference.
+
+Language-specific differences are noted in each section below. The `packages` section has the most variation.
 
 ---
 
 ## Ruby
 
-### Install
+### Language agent
 
-Add to the **beginning** of your `Gemfile` (must be first gem):
-
-```ruby
-group :development, :test do
-  gem 'appmap'
-end
-```
-
-Then run `bundle install`.
+The `appmap` gem should be present in the `test` and `development` bundles.
 
 ### Configuration
 
 ```yaml
 name: my_project
 packages:
-- path: app
-- gem: activerecord        # Record a dependency gem
-  shallow: true            # Default for gem entries
+  - path: app
+  - gem: activerecord # Record a dependency gem
+    shallow: true # Default for gem entries
 exclude:
-- MyClass#my_instance_method
-- MyClass.my_class_method
+  - MyClass#my_instance_method
+  - MyClass.my_class_method
 ```
 
 ### Record tests
@@ -89,22 +78,12 @@ bundle exec cucumber
 Automatic via Rack middleware. Enabled by default when `RAILS_ENV=development`.
 
 ```sh
-APPMAP_RECORD_REQUESTS=true rails server
+rails server
 ```
 
 ### Remote recording
 
 Enabled by default in development. Control with `APPMAP_RECORD_REMOTE=true|false`.
-
-### Environment variables
-
-| Variable | Purpose |
-|---|---|
-| `APPMAP=false` | Disable all recording |
-| `APPMAP_RECORD_REQUESTS=true\|false` | Toggle request recording |
-| `APPMAP_RECORD_REMOTE=true\|false` | Toggle remote recording |
-| `APPMAP_RECORD_RSPEC=false` | Disable RSpec recording |
-| `APPMAP_RECORD_MINITEST=false` | Disable Minitest recording |
 
 ### Advanced usage
 
@@ -114,47 +93,36 @@ See https://appmap.io/docs/reference/appmap-ruby.html
 
 ## Python
 
-### Install
+### Language agent
 
-```sh
-pip install appmap          # pip
-poetry add --group=dev appmap  # poetry
-pipenv install --dev appmap    # pipenv
-```
+The `appmap` package should be installed and available.
 
 ### Configuration
 
 ```yaml
 name: my_python_app
 packages:
-- path: app.mod1            # Use Python module notation
-  shallow: true
-- path: app.mod2
-  exclude:
-  - MyClass
-# - dist: Django            # Record an installed distribution package
+  - path: app.mod1 # Use Python module notation
+    shallow: true
+  - path: app.mod2
+    exclude:
+      - MyClass # Note that app.mod2 does not need to be repeated here
 ```
 
 ### Record tests
 
-Use the `appmap-python` wrapper to run tests. It sets `APPMAP=true` and
+Use the `appmap-python` wrapper to run tests. It enables recording and
 ensures instrumentation is properly initialized.
 
 ```sh
-# Preferred - via appmap-python wrapper
 appmap-python pytest              # Output: tmp/appmap/pytest/
 appmap-python python -m unittest  # Output: tmp/appmap/unittest/
-
-# Also works - explicit env var
-APPMAP=true pytest
 ```
-
-Without `APPMAP=true`, AppMap's conditional imports are skipped and no
-recording occurs.
 
 ### Record HTTP requests
 
 Automatic for Django, Flask, and FastAPI when running in development mode:
+
 - **Django**: `DEBUG = True` in settings.py
 - **Flask**: run with `--debug`
 - **FastAPI/uvicorn**: run with `--reload`
@@ -163,8 +131,6 @@ Automatic for Django, Flask, and FastAPI when running in development mode:
 
 ```sh
 appmap-python --record process python my_script.py
-# or
-APPMAP_RECORD_PROCESS=true python my_script.py
 ```
 
 ### Remote recording
@@ -174,17 +140,11 @@ Flask `--debug`). Force with `APPMAP_RECORD_REMOTE=true`.
 
 ### Environment variables
 
-| Variable | Purpose |
-|---|---|
-| `APPMAP=true\|false` | Enable/disable all recording |
-| `APPMAP_RECORD_PYTEST=false` | Disable pytest recording |
-| `APPMAP_RECORD_UNITTEST=false` | Disable unittest recording |
-| `APPMAP_RECORD_REQUESTS=true\|false` | Toggle request recording |
-| `APPMAP_RECORD_REMOTE=true\|false` | Toggle remote recording |
-| `APPMAP_RECORD_PROCESS=true` | Record entire process |
-| `APPMAP_CONFIG=path/to/appmap.yml` | Custom config file path |
-| `APPMAP_DISPLAY_PARAMS=true\|false` | Capture and emit parameter/return values (default: false). Note that these values will be recorded by default for labeled functions. |
-| `APPMAP_LOG_LEVEL=DEBUG` | Set log level |
+| Variable                             | Purpose                                                                                                                              |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `APPMAP_CONFIG=path/to/appmap.yml`   | Custom config file path                                                                                                              |
+| `APPMAP_DISPLAY_PARAMS=true\|false`  | Capture and emit parameter/return values (default: false). Note that these values will be recorded by default for labeled functions. |
+| `APPMAP_LOG_LEVEL=DEBUG`             | Set log level                                                                                                                        |
 
 ### Advanced usage
 
@@ -194,9 +154,9 @@ See https://appmap.io/docs/reference/appmap-python.html
 
 ## Node.js
 
-### Install
+### Language agent
 
-No install required -- use `npx` to run directly.
+The `appmap-node` package should be prefixed to the run command.
 
 ### Usage
 
@@ -211,13 +171,13 @@ npx appmap-node <your command>
 Auto-generated if missing. Typical `appmap.yml`:
 
 ```yaml
-name: MyApp                 # Auto-detected from package.json
+name: MyApp # Auto-detected from package.json
 appmap_dir: tmp/appmap
 packages:
-- path: .
-  exclude:
-  - node_modules
-  - .yarn
+  - path: .
+    exclude:
+      - node_modules
+      - .yarn
 ```
 
 ### Record tests
@@ -229,7 +189,7 @@ npx appmap-node npx vitest
 # Output: tmp/appmap/<mocha|jest|vitest>/
 ```
 
-**Important**: If you modify `NODE_OPTIONS`, run `appmap-node` *after* the
+**Important**: If you modify `NODE_OPTIONS`, run `appmap-node` _after_ the
 modification:
 
 ```sh
@@ -267,9 +227,9 @@ See https://appmap.io/docs/reference/appmap-node.html
 
 ## Java
 
-### Install
+### Language agent
 
-The Java agent JAR is available from Maven Central or is auto-downloaded by
+The `appmap.jar` Java agent JAR is available from Maven Central or is auto-downloaded by
 IDE plugins to `$HOME/.appmap/lib/java/appmap.jar`.
 
 Run with the `-javaagent` JVM flag:
@@ -285,11 +245,11 @@ name: MyProject
 language: java
 appmap_dir: tmp/appmap
 packages:
-- path: com.mycorp.myproject
-  exclude:
-  - com.mycorp.myproject.MyClass#MyMethod
-- path: org.springframework.web
-  shallow: true
+  - path: com.mycorp.myproject
+    exclude:
+      - com.mycorp.myproject.MyClass#MyMethod
+  - path: org.springframework.web
+    shallow: true
 ```
 
 ### Record tests with Maven
@@ -361,14 +321,14 @@ Requires a servlet container (Tomcat, Jetty, etc.). Start the app with the
 
 ### System properties
 
-| Property | Purpose | Default |
-|---|---|---|
-| `appmap.config.file` | Config file path | `appmap.yml` |
-| `appmap.output.directory` | Output directory | `./tmp/appmap` |
-| `appmap.recording.auto` | Auto-record on boot | `false` |
-| `appmap.recording.requests` | Record HTTP requests | `true` |
-| `appmap.record.private` | Record private methods | `false` |
-| `appmap.debug` | Enable debug logging | disabled |
+| Property                    | Purpose                | Default        |
+| --------------------------- | ---------------------- | -------------- |
+| `appmap.config.file`        | Config file path       | `appmap.yml`   |
+| `appmap.output.directory`   | Output directory       | `./tmp/appmap` |
+| `appmap.recording.auto`     | Auto-record on boot    | `false`        |
+| `appmap.recording.requests` | Record HTTP requests   | `true`         |
+| `appmap.record.private`     | Record private methods | `false`        |
+| `appmap.debug`              | Enable debug logging   | disabled       |
 
 ### Advanced usage
 

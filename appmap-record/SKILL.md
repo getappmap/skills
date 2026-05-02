@@ -220,7 +220,13 @@ FastAPI ~0.110.0, pytest ~6, SQLAlchemy ~1.
 
 ### Language agent
 
-The `appmap-node` package should be prefixed to the run command.
+The `appmap-node` package should be prefixed to the run command. It works
+on current Node LTS releases (Node 18+); newer versions including Node 22
+are fine in practice — if you hit an issue, ensure you're on
+`appmap-node@latest`.
+
+> **Do not use `appmap-agent-js`.** It is deprecated and superseded by
+> `appmap-node`. Always invoke recording through `npx appmap-node`.
 
 ### Usage
 
@@ -282,6 +288,19 @@ APPMAP_RECORDER_PROCESS_ALWAYS=true npx appmap-node npm start
 
 Automatic -- use the AppMap remote recording API or IDE plugin to
 start/stop recordings while the app is running.
+
+### Make recordings queryable
+
+Recording produces `.appmap.json` files; analyzing them requires indexing
+into a queryable database first:
+
+```sh
+npx @appland/appmap index --appmap-dir tmp/appmap
+```
+
+This populates `~/.appmap/data/<sha>/query.db`, which is what the AppMap
+MCP server and the `appmap query` verbs read from. See the
+**appmap-analyze** skill for the read side of the loop.
 
 ### Advanced usage
 

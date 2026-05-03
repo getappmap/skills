@@ -104,12 +104,12 @@ get_call_tree appmap=<name> focus_type=sql_query focus_value=<sql substring>
 ### "What broke?"
 
 ```
-find_exceptions
-  → identify the failing recording
+find_exceptions with_logs=10
+  → each exception comes back with the last 10 log lines preceding it
+    under recent_logs (chronological); usually the fastest read on
+    "what did the app think went wrong?"
 get_call_tree appmap=<name>
-  → see context around the throw
-find_logs appmap=<name>
-  → read what the app logged during the failing run
+  → see surrounding call context if recent_logs isn't enough
 ```
 
 ### "What did the app log?"
@@ -176,8 +176,11 @@ Each tool returns an array of rows. Notable columns:
   `elapsed_ms`.
 - **`find_queries`**: `appmap_name`, `sql_text`, `elapsed_ms`,
   `caller_class`, `caller_method`.
-- **`find_exceptions`**: `appmap_name`, `event_id`, `exception_class`,
-  `message`, `path`, `lineno`.
+- **`find_exceptions`**: `appmap_id`, `appmap_name`, `event_id`,
+  `exception_class`, `message`, `path`, `lineno`. Pass `with_logs=N`
+  to attach `recent_logs` — an array of up to N log entries (same
+  shape as `find_logs` rows) that preceded the exception in event
+  order. Returned chronologically (oldest first).
 - **`find_logs`**: `appmap_name`, `event_id`, `parent_event_id`,
   `logger`, `method_id`, `path`, `lineno`, `parameters_json`,
   `return_value`. The displayable log message is *not* a separate

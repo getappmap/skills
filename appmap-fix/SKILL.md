@@ -189,7 +189,10 @@ discover a passing baseline if you don't already have one.
   often the *first* lead when a stack trace is unhelpful: an error
   log just before the failure tells you what the app thought went
   wrong. Captured automatically for any function labeled `log`.
-- `find_exceptions appmap=<id>` — every exception in the recording.
+- `find_exceptions appmap=<id> with_logs=10` — each exception comes
+  back with the last 10 log lines preceding it under `recent_logs`.
+  This is usually the most efficient single-call lead when the bug
+  ends in a thrown error.
 - `function_hotspots route=<route>` — if "slow" is the bug.
 - `sql_hotspots route=<route>` — if a query is the bug.
 - `list_labels` — what labels are already present (sanity check that

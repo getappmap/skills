@@ -35,6 +35,28 @@ packages:
 Language-specific differences are noted in each section below. The `packages`
 section has the most variation.
 
+### Iterative scoping (start narrow, expand later)
+
+`packages:` is a tunable. For an investigation — performance work,
+debugging, behavioral discovery — start with the smallest package set
+that still captures the area you care about. The first recording is
+about *orientation*, not coverage.
+
+- Begin with one or two packages closest to your code path.
+- Set `shallow: true` on dependencies so you see entry into them but
+  not their internals.
+- Use the `exclude:` list to silence noisy classes/methods you've
+  already ruled out.
+
+Then expand based on what the recording shows: add a package, remove a
+`shallow`, or label specific functions to surface their parameters and
+return values (see the `appmap-label` skill — labels make a function
+always recorded with full call data, even if the package would not
+otherwise be instrumented).
+
+For a step-by-step workflow that uses this iterative scoping to
+diagnose a bug, see the `appmap-fix` skill.
+
 ---
 
 ## Ruby

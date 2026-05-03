@@ -184,6 +184,11 @@ discover a passing baseline if you don't already have one.
 
 **4f. Other angles, as needed.**
 
+- `find_logs appmap=<id>` — log lines the app emitted during the run.
+  Use `message=<substring>` to narrow if there are many. Logs are
+  often the *first* lead when a stack trace is unhelpful: an error
+  log just before the failure tells you what the app thought went
+  wrong. Captured automatically for any function labeled `log`.
 - `find_exceptions appmap=<id>` — every exception in the recording.
 - `function_hotspots route=<route>` — if "slow" is the bug.
 - `sql_hotspots route=<route>` — if a query is the bug.

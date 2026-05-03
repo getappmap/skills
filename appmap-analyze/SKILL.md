@@ -64,6 +64,7 @@ exposed tools mirror the CLI verbs:
 | `find_requests` | individual HTTP requests |
 | `find_queries` | individual SQL queries |
 | `find_calls` | function calls (filterable by class, method, label) |
+| `find_logs` | log lines from functions labeled `log` (filter by message substring or logger class) |
 | `find_exceptions` | exception rows |
 | `get_call_tree` | one recording's tree, optionally focused |
 | `find_related` | recordings similar to a reference |
@@ -107,7 +108,30 @@ find_exceptions
   → identify the failing recording
 get_call_tree appmap=<name>
   → see context around the throw
+find_logs appmap=<name>
+  → read what the app logged during the failing run
 ```
+
+### "What did the app log?"
+
+```
+find_logs appmap=<name>                            # all log lines in one recording
+find_logs message="connection refused"             # by substring (across recordings)
+find_logs logger=AuditLogger appmap=<name>         # by logging class
+```
+
+`find_logs` returns rows captured from any function labeled `log`. The
+substring search is broad on purpose — it matches anywhere in the call's
+captured parameters or return value, including parameter names. Tighten
+visually as you read the rows.
+
+The actual log message lives inside `parameters_json` (a `[{name, class,
+value}, …]` blob) — read the value of the parameter named `message` /
+`msg`, or the first string-typed parameter. Some recorders (or
+hand-instrumented loggers) instead return a structured object like
+`{level, message, ...}` from the log function; in that case parse
+`return_value` as JSON and use its `message` field. Both forms are
+searchable by `--message`.
 
 ### "Did this branch regress?"
 
@@ -154,6 +178,11 @@ Each tool returns an array of rows. Notable columns:
   `caller_class`, `caller_method`.
 - **`find_exceptions`**: `appmap_name`, `event_id`, `exception_class`,
   `message`, `path`, `lineno`.
+- **`find_logs`**: `appmap_name`, `event_id`, `parent_event_id`,
+  `logger`, `method_id`, `path`, `lineno`, `parameters_json`,
+  `return_value`. The displayable log message is *not* a separate
+  column — derive it from `parameters_json` (or structured
+  `return_value`) as described in the recipe above.
 - **`get_call_tree`**: ordered nodes with `depth`, `kind`
   (`function`/`http`/`sql`), `fqid`/`sql_text`, `elapsed_ms`,
   `event_id`.

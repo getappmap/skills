@@ -126,18 +126,16 @@ find_logs message="connection refused"             # by substring (across record
 find_logs logger=AuditLogger appmap=<name>         # by logging class
 ```
 
-`find_logs` returns rows captured from any function labeled `log`. The
-substring search is broad on purpose — it matches anywhere in the call's
-captured parameters or return value, including parameter names. Tighten
-visually as you read the rows.
+`find_logs` returns rows captured from any function labeled `log`. Each
+row carries a `message` field with the display-projected text already
+extracted (from a structured `return_value` or from the parameter
+named `message`/`msg`, falling back to the first string parameter); use
+it directly. `parameters_json` and `return_value` are still on the row
+for callers who want the underlying captured values.
 
-The actual log message lives inside `parameters_json` (a `[{name, class,
-value}, …]` blob) — read the value of the parameter named `message` /
-`msg`, or the first string-typed parameter. Some recorders (or
-hand-instrumented loggers) instead return a structured object like
-`{level, message, ...}` from the log function; in that case parse
-`return_value` as JSON and use its `message` field. Both forms are
-searchable by `--message`.
+The substring search is broad on purpose — it matches anywhere in
+`parameters_json` and `return_value`, including parameter names and
+class names. Tighten visually as you read the rows.
 
 ### "Did this branch regress?"
 
@@ -182,16 +180,18 @@ Each tool returns an array of rows. Notable columns:
   `elapsed_ms`.
 - **`find_queries`**: `appmap_name`, `sql_text`, `elapsed_ms`,
   `caller_class`, `caller_method`.
-- **`find_exceptions`**: `appmap_id`, `appmap_name`, `event_id`,
-  `exception_class`, `message`, `path`, `lineno`. Pass `with_logs=N`
-  to attach `recent_logs` — an array of up to N log entries (same
-  shape as `find_logs` rows) that preceded the exception in event
-  order. Returned chronologically (oldest first).
+- **`find_exceptions`**: `appmap_id`, `appmap_name`, `event_id` (the
+  throwing call's entry), `return_event_id` (the throw point in the
+  event stream), `exception_class`, `message`, `path`, `lineno`.
+  Pass `with_logs=N` to attach `recent_logs` — an array of up to N
+  log entries (same shape as `find_logs` rows, including the
+  display-projected `message`) that preceded the throw. Returned
+  chronologically (oldest first). Bounded by `return_event_id` so logs
+  that fired *inside* the throwing call are included — that's the
+  usual answer to "what did the app log before it crashed?".
 - **`find_logs`**: `appmap_name`, `event_id`, `parent_event_id`,
-  `logger`, `method_id`, `path`, `lineno`, `parameters_json`,
-  `return_value`. The displayable log message is *not* a separate
-  column — derive it from `parameters_json` (or structured
-  `return_value`) as described in the recipe above.
+  `logger`, `method_id`, `path`, `lineno`, `message` (display-projected
+  log text — read directly), `parameters_json`, `return_value`.
 - **`get_call_tree`**: ordered nodes with `depth`, `kind`
   (`function`/`http_server`/`http_client`/`sql`/`exception`/`log`),
   `fqid`/`sql_text`/etc., `elapsed_ms`, `event_id`. Log calls (any

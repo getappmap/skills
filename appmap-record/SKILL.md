@@ -330,6 +330,16 @@ See https://appmap.io/docs/reference/appmap-node.html
 
 ### Troubleshooting
 
+**Babel SyntaxError when wrapping a TypeScript test runner in a monorepo:**
+- Symptom: `npx appmap-node@latest npx jest …` fails to parse a `.ts`
+  test file with a babel `Unexpected token` error, even though the
+  bare `npx jest …` runs fine.
+- Cause: appmap-node's hook bundles its own babel config and may not
+  pick up a `ts-jest` (or other TS) preset configured in a sub-package's
+  `jest.config.js` when invoked from a parent directory.
+- Fix: run `npx appmap-node` from the package directory whose
+  `jest.config.js` defines the TypeScript transform.
+
 **No AppMaps generated or unexpected behavior:**
 - Ensure you are running the latest version: `npx appmap-node@latest`.
 - If you modify `NODE_OPTIONS` in your launch command, `appmap-node` **must

@@ -187,8 +187,12 @@ Each tool returns an array of rows. Notable columns:
   column — derive it from `parameters_json` (or structured
   `return_value`) as described in the recipe above.
 - **`get_call_tree`**: ordered nodes with `depth`, `kind`
-  (`function`/`http`/`sql`), `fqid`/`sql_text`, `elapsed_ms`,
-  `event_id`.
+  (`function`/`http_server`/`http_client`/`sql`/`exception`/`log`),
+  `fqid`/`sql_text`/etc., `elapsed_ms`, `event_id`. Log calls (any
+  function labeled `log`) appear inline at their event position with
+  kind=`log` rather than being mixed in with regular function calls.
+  The CLI verb additionally accepts `--filter logs` to flatten the
+  tree to just log lines.
 
 ## Driving the MCP from a script
 

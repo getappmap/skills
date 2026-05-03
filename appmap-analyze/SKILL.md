@@ -70,8 +70,14 @@ exposed tools mirror the CLI verbs:
 | `find_related` | recordings similar to a reference |
 | `compare_branches` | per-route latency delta between two branches |
 
-Resources: `appmap://endpoints` returns the same data as
-`list_endpoints`, useful as a stable summary surface.
+Resources:
+- `appmap://endpoints` — same data as `list_endpoints`, useful as a
+  stable summary surface.
+- `appmap://recording/{ref}/logs` — all log lines for one recording
+  (templated; `{ref}` is the recording's `appmap_id` or its
+  `appmap_name`/basename, same forms `find_recordings` returns). Use
+  `resources/templates/list` to discover; substitute `{ref}` and read
+  with `resources/read`.
 
 ## Analysis recipes
 

@@ -27,25 +27,7 @@ This is the *read* side of AppMap. To produce recordings, see the
    This populates `~/.appmap/data/<sha>/query.db`. Pass `--query-db
    <path>` to write somewhere explicit (recommended for ad-hoc analysis).
 
-## Two ways to query
-
-### A. CLI verbs
-
-Direct invocations for one-shot questions:
-
-```sh
-appmap query endpoints                     # per-route p50/p95/error rate
-appmap query find requests --duration ">500ms"
-appmap query find queries --table users
-appmap query hotspots --type function --route "POST /orders"
-appmap query tree <appmap-name> --focus-fn "app/Orders#create"
-appmap query related <appmap-name>
-appmap query compare <branch-a> <branch-b>
-```
-
-Use `--query-db <path>` to point at a non-default database.
-
-### B. MCP server (recommended for LLM-driven analysis)
+## Querying via MCP
 
 ```sh
 appmap query mcp --query-db <path>
@@ -53,7 +35,7 @@ appmap query mcp --query-db <path>
 
 Speaks JSON-RPC 2.0 over stdio (newline-delimited). Standard MCP
 handshake, then `tools/call` with a tool name and arguments. The 11
-exposed tools mirror the CLI verbs:
+exposed tools:
 
 | Tool | Returns |
 |---|---|
@@ -96,6 +78,24 @@ find_requests route="POST /orders" duration=">p95"
 get_call_tree appmap=<name> focus_type=function focus_value=<fqid>
               ancestors=2 descendants=2
 ```
+
+### "What is this code actually doing?"
+
+The generic root-cause angle: anchor a label on a suspect function,
+record, then inspect what the runtime did.
+
+```
+find_calls label=lock.acquire appmap=<id>
+  → each anchored call's parameters_json + return_value
+get_call_tree appmap=<id> focus_type=function focus_value=<fqid>
+              ancestors=2 descendants=2
+  → the structural context around one anchor
+```
+
+`find_calls` answers "what values flowed through here";
+`get_call_tree` answers "in what order, with what parents/children".
+Reach for the tree when the call sequence matters; otherwise stay
+with `find_calls`.
 
 ### "What's slow about my SQL?"
 
@@ -197,8 +197,6 @@ Each tool returns an array of rows. Notable columns:
   `fqid`/`sql_text`/etc., `elapsed_ms`, `event_id`. Log calls (any
   function labeled `log`) appear inline at their event position with
   kind=`log` rather than being mixed in with regular function calls.
-  The CLI verb additionally accepts `--filter logs` to flatten the
-  tree to just log lines.
 
 ## Driving the MCP from a script
 

@@ -17,45 +17,28 @@ Use this skill when the user or an agent wants to:
 2. **Run** tests or the application with AppMap enabled.
 3. **Find** recorded data in `tmp/appmap/` (default output directory).
 
-## Configuration (`appmap.yml`)
+## Configuration
 
-A default `appmap.yml` is auto-created by each language agent if none exists.
-You do not need to create this file. It is documented here for reference only.
+This skill covers *making* recordings — running tests, serving HTTP
+under the agent, wrapping a code block with a programmatic recorder.
+Decision logic for which lever to pull during an investigation lives in **appmap-fix**.
 
-```yaml
-name: my_project          # Project name (required)
-appmap_dir: tmp/appmap     # Output directory (default: tmp/appmap)
-packages:
-- path: app                # Source code path to instrument
-  exclude:
-  - SomeClass              # Exclude specific classes/methods
-  shallow: false           # When true, only record entry into the package
+A default `appmap.yml` is auto-created by each language agent if none
+exists, so most invocations work without prior configuration. Built-in
+hooks capture HTTP, SQL, exceptions, and labeled functions even with
+no `packages:` declared.
+
+## After recording: index for queries
+
+Recordings are written as `.appmap.json` files. To query them with
+the MCP or CLI verbs, index into a queryable database first:
+
+```sh
+npx @appland/appmap index --appmap-dir tmp/appmap
 ```
 
-Language-specific differences are noted in each section below. The `packages`
-section has the most variation.
-
-### Iterative scoping (start narrow, expand later)
-
-`packages:` is a tunable. For an investigation — performance work,
-debugging, behavioral discovery — start with the smallest package set
-that still captures the area you care about. The first recording is
-about *orientation*, not coverage.
-
-- Begin with one or two packages closest to your code path.
-- Set `shallow: true` on dependencies so you see entry into them but
-  not their internals.
-- Use the `exclude:` list to silence noisy classes/methods you've
-  already ruled out.
-
-Then expand based on what the recording shows: add a package, remove a
-`shallow`, or label specific functions to surface their parameters and
-return values (see the `appmap-label` skill — labels make a function
-always recorded with full call data, even if the package would not
-otherwise be instrumented).
-
-For a step-by-step workflow that uses this iterative scoping to
-diagnose a bug, see the `appmap-fix` skill.
+This populates `~/.appmap/data/<sha>/query.db`. See **appmap-analyze**
+for the read side.
 
 ---
 
@@ -65,17 +48,18 @@ diagnose a bug, see the `appmap-fix` skill.
 
 The `appmap` gem should be present in the `test` and `development` bundles.
 
-### Configuration
+### Programmatic recording (Ruby)
 
-```yaml
-name: my_project
-packages:
-- path: app
-- gem: activerecord        # Record a dependency gem
-  shallow: true            # Default for gem entries
-exclude:
-- MyClass#my_instance_method
-- MyClass.my_class_method
+In-code recording of a block — useful when wrapping a whole test is
+too coarse:
+
+```ruby
+require 'appmap'
+
+appmap = AppMap.record do
+  # code under recording
+end
+File.write('tmp/appmap/scratch.appmap.json', JSON.generate(appmap))
 ```
 
 ### Record tests
@@ -127,14 +111,13 @@ See https://appmap.io/docs/reference/appmap-ruby.html
   other environments, set `APPMAP_RECORD_REQUESTS=true` explicitly.
 - Run `rake middleware` to confirm AppMap middleware is in the Rack stack.
 
-**Debugging environment variables:**
+**Essential environment variables:**
 
 | Variable | Purpose |
 |---|---|
 | `APPMAP=false` | Disable all recording |
-| `APPMAP_PROFILE_HOOK=true` | Diagnostic timing info on gem instrumentation |
+| `APPMAP_RECORD_REQUESTS=true` | Force HTTP request recording outside development |
 | `APPMAP_LOG_HOOK=true` | Detailed instrumentation hook logging (writes to `appmap_hook.log`) |
-| `APPMAP_LOG_HOOK_FILE=stderr` | Redirect hook logs to stderr or a custom file |
 
 **Disabling recording for specific tests:**
 Use the `appmap: false` RSpec tag:
@@ -152,16 +135,18 @@ end
 
 The `appmap` package should be installed and available.
 
-### Configuration
+### Programmatic recording (Python)
 
-```yaml
-name: my_python_app
-packages:
-- path: app.mod1            # Use Python module notation
-  shallow: true
-- path: app.mod2
-  exclude:
-  - MyClass                 # Note that app.mod2 does not need to be repeated here
+In-code recording of a block:
+
+```python
+from appmap import Recording
+
+with Recording() as rec:
+    # code under recording
+    pass
+
+# rec.events holds the captured events
 ```
 
 ### Record tests
@@ -192,13 +177,14 @@ appmap-python --record process python my_script.py
 Enabled automatically in development environments (Django `DEBUG=True`,
 Flask `--debug`). Force with `APPMAP_RECORD_REMOTE=true`.
 
-### Environment variables
+### Essential environment variables
 
 | Variable | Purpose |
 |---|---|
+| `APPMAP=true` | Enable recording (auto-set by `appmap-python` wrapper) |
+| `APPMAP_DISPLAY_PARAMS=true` | Capture params/returns for unlabeled functions (labeled functions always capture) |
 | `APPMAP_CONFIG=path/to/appmap.yml` | Custom config file path |
-| `APPMAP_DISPLAY_PARAMS=true\|false` | Capture and emit parameter/return values (default: false). Note that these values will be recorded by default for labeled functions. |
-| `APPMAP_LOG_LEVEL=DEBUG` | Set log level |
+| `APPMAP_LOG_LEVEL=DEBUG` | Verbose logging for instrumentation troubleshooting |
 
 ### Advanced usage
 
@@ -258,19 +244,25 @@ Wrap your existing launch command:
 npx appmap-node <your command>
 ```
 
-### Configuration
+### Programmatic recording (Node)
 
-Auto-generated if missing. Typical `appmap.yml`:
+In-code recording of a block (sync or async):
 
-```yaml
-name: MyApp                 # Auto-detected from package.json
-appmap_dir: tmp/appmap
-packages:
-- path: .
-  exclude:
-  - node_modules
-  - .yarn
+```javascript
+import { record } from 'appmap-node';
+
+const appmap = record(() => {
+  // synchronous code under recording
+});
+
+// async:
+const appmap = await record(async () => {
+  // async code under recording
+});
 ```
+
+The import is from the `appmap-node` package (the same package that
+provides the `npx appmap-node` CLI), not `appmap`.
 
 ### Record tests
 
@@ -310,19 +302,6 @@ APPMAP_RECORDER_PROCESS_ALWAYS=true npx appmap-node npm start
 
 Automatic -- use the AppMap remote recording API or IDE plugin to
 start/stop recordings while the app is running.
-
-### Make recordings queryable
-
-Recording produces `.appmap.json` files; analyzing them requires indexing
-into a queryable database first:
-
-```sh
-npx @appland/appmap index --appmap-dir tmp/appmap
-```
-
-This populates `~/.appmap/data/<sha>/query.db`, which is what the AppMap
-MCP server and the `appmap query` verbs read from. See the
-**appmap-analyze** skill for the read side of the loop.
 
 ### Advanced usage
 
@@ -367,18 +346,16 @@ Run with the `-javaagent` JVM flag:
 java -javaagent:$HOME/.appmap/lib/java/appmap.jar -jar myapp.jar
 ```
 
-### Configuration
+### Programmatic recording (Java)
 
-```yaml
-name: MyProject
-language: java
-appmap_dir: tmp/appmap
-packages:
-- path: com.mycorp.myproject
-  exclude:
-  - com.mycorp.myproject.MyClass#MyMethod
-- path: org.springframework.web
-  shallow: true
+In-code recording of a `Runnable`:
+
+```java
+import com.appland.appmap.record.Recorder;
+
+Recorder.getInstance().record("scenario_name", () -> {
+    // code under recording
+});
 ```
 
 ### Record tests with Maven
@@ -448,15 +425,13 @@ java -javaagent:$HOME/.appmap/lib/java/appmap.jar \
 Requires a servlet container (Tomcat, Jetty, etc.). Start the app with the
 `-javaagent` flag and use IDE or curl to start/stop recording.
 
-### System properties
+### Essential system properties
 
 | Property | Purpose | Default |
 |---|---|---|
 | `appmap.config.file` | Config file path | `appmap.yml` |
 | `appmap.output.directory` | Output directory | `./tmp/appmap` |
 | `appmap.recording.auto` | Auto-record on boot | `false` |
-| `appmap.recording.requests` | Record HTTP requests | `true` |
-| `appmap.record.private` | Record private methods | `false` |
 | `appmap.debug` | Enable debug logging | disabled |
 
 ### Advanced usage

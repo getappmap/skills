@@ -1,0 +1,43 @@
+# Gold-traces manifest (managed by the appmap-gold-traces skill).
+#
+# The curated set of recordings that form the release behavior baseline.
+# This file is DATA-ONLY. Machine config (commands, paths) lives in config.yaml.
+#
+# - core:     the canonical baseline. Compared on every release.
+# - optional: recordings to promote into `core` when a release materially
+#             changes that subsystem.
+#
+# Each entry:
+#   feature      functional area name (entries with feature "auth" are always
+#                flagged for security review when they change)
+#   test_file    the test that produces the recording (as the record command
+#                needs it — typically relative to `cwd` in config.yaml)
+#   test_name    the test function/case name
+#   appmap_path  recording path relative to <cwd>/<appmap_dir>
+#   summary      (core) short human context for what the trace demonstrates
+#   trigger      (optional) when this entry should be promoted into core
+#
+# Curation guidelines:
+#   1. Prefer recordings that exercise a user-visible feature or release-
+#      critical backend behavior.
+#   2. Prefer a real integration path over a narrow validation-only branch.
+#   3. Prefer distinct subsystem coverage over duplicate traces.
+#   4. The trace must be DETERMINISTIC — seed any RNG so the only diffs are
+#      real behavior changes, not run-to-run noise.
+#   5. Keep traces lean (KBs, not MBs). See the skill's leanness guidance.
+
+schema_version: 1
+
+core:
+  - feature: auth
+    test_file: tests/test_auth.py
+    test_name: test_login_verifies_token_and_mints_session
+    appmap_path: pytest/test_login_verifies_token_and_mints_session.appmap.json
+    summary: Full auth happy path from token verification through session minting.
+
+optional:
+  - feature: saved-maps
+    test_file: tests/test_graphql.py
+    test_name: test_save_map_round_trip
+    appmap_path: pytest/test_save_map_round_trip.appmap.json
+    trigger: Release touches saved-map persistence or retrieval flows.

@@ -32,9 +32,17 @@ The model is **baseline → re-record → compare → classify → bless**:
 2. The raw baseline AppMaps are committed under `baseline/appmaps/`.
 3. At compare time the engine exports each AppMap to AppMap's JSON
    sequence-diagram form, **normalizes** away volatility (actor ordering, event
-   ids, exact timings — keeping coarse elapsed-time buckets), then diffs the
-   normalized call trees and the set of participating packages (actors).
-4. A report classifies each change and flags security-sensitive deltas.
+   ids, literals/bind-params), then diffs three dimensions: the normalized call
+   trees, the set of participating packages (actors), and the **SQL profile** —
+   a per-sequence multiset of query **fingerprints** (operation + tables + WHERE/
+   JOIN filter columns), order-independent. The fingerprint strips projection
+   columns and literals, so a new `SELECT` column is quiet while a dropped
+   predicate, a new write, a newly-touched table, or the same query now run N
+   times (N+1) each shows up. Elapsed time is recorded as a coarse bucket but is
+   **not** treated as a behavioral change (timing jitter would flag every run).
+4. A report classifies each change and flags security-sensitive deltas —
+   including SQL: `sql-query-removed` (a dropped guard/filter or vanished read —
+   high on a security path), `sql-write-added`, and `sql-n-plus-one`.
 5. You bless intended changes by copying the fresh recordings over the baseline.
 
 The engine stores **only** the raw baselines; sequence/normalized artifacts are
@@ -140,18 +148,20 @@ only if the release touched no traceable application code.**
    `gold_traces/reports/latest-compare.{json,md}`. Compare **never** writes the
    baseline. Add `--include-optional` to also compare the optional set.
 
-3. **Classify the diff — separate noise from real change.** `elapsedBucket`-only
-   changes are run-to-run timing noise; ignore them. Everything else is
-   structural:
+3. **Classify the diff — separate noise from real change.** The engine already
+   excludes `elapsedBucket`-only (timing) deltas from `changed`/`flagged`, so an
+   entry with `changed: true` has a **structural or SQL** delta. Review each:
    ```sh
-   node -e 'const r=require("./gold_traces/reports/latest-compare.json");for(const e of r.entries){if(!e.changed)continue;const s=e.diff.changes.filter(c=>!(c.type==="action_changed"&&c.field==="elapsedBucket"));console.log((s.length?"STRUCTURAL ":"timing-only ")+e.test_name+(s.length?": "+JSON.stringify(s.slice(0,4)):""))}'
+   node -e 'const r=require("./gold_traces/reports/latest-compare.json");for(const e of r.entries){if(!e.changed)continue;console.log(e.test_name+": "+JSON.stringify(e.diff.changes.filter(c=>!(c.type==="action_changed"&&c.field==="elapsedBucket")).slice(0,5)))}'
    ```
-   For every **structural** entry, confirm the delta maps to intended work in
-   this release. **Stop and ask the user** on any newly-raised exception, a
-   removed auth/guard call, or drift you can't explain (the report also raises
-   `security-review` findings for auth-adjacent changes). A trace that drifts
-   every run with **no** code change is nondeterministic — fix the trace (seed
-   it), don't bless the noise.
+   For every changed entry, confirm the delta maps to intended work in this
+   release. **Stop and ask the user** on any newly-raised exception, a removed
+   auth/guard call, an `sql-query-removed` (a dropped WHERE/JOIN predicate or a
+   guard query that no longer runs — a possible access-control regression), an
+   unexpected `sql-write-added`, an `sql-n-plus-one`, or drift you can't explain
+   (the report also raises `security-review` findings for auth-adjacent changes).
+   A trace that drifts every run with **no** code change is nondeterministic —
+   fix the trace (seed it), don't bless the noise.
 
 4. **Bless only meaningful change** (avoid Git churn):
    - **Only timing noise:** leave the baseline alone — compare never touched it.

@@ -364,6 +364,7 @@ function normalizeAction(action) {
       raises_exception: Boolean(action.stableProperties?.raises_exception),
     },
     returnValue: normalizeReturnValue(action.returnValue),
+    sql: normalizeSql(action.query),
     children: (action.children ?? []).map(normalizeAction),
   };
 }
@@ -401,6 +402,119 @@ function normalizeReturnType(typeInfo) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// SQL fingerprinting
+//
+// The sequence diagram carries the full statement on each database action in
+// `action.query` (appmap prefixes executemany with "-- N times"). The positional
+// action diff deliberately ignores it: a benign projection change (a new SELECT
+// column) would otherwise flag every query node, and the positional walk is
+// already fragile to inserted frames. Instead we reduce each statement to a
+// structural FINGERPRINT — operation + tables + filter (WHERE/JOIN/HAVING)
+// columns — and diff the per-sequence MULTISET of fingerprints, order-independent.
+// That surfaces the regressions a reviewer cares about while staying quiet on
+// cosmetics:
+//   - a dropped WHERE/JOIN predicate, or a query that no longer runs -> removed
+//   - a new write, or a newly touched table                          -> added
+//   - the same query now run more times (N+1 / fan-out)              -> count delta
+//   - a new projected column (e.g. `abandoned_at`)         -> same fingerprint (quiet)
+// Literals, bind params, projection lists, aliases, and whitespace are stripped.
+
+const SQL_OPS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH'];
+
+function normalizeSql(query) {
+  if (typeof query !== 'string') return null;
+  let text = query;
+  // appmap collapses executemany into a "-- N times\n<stmt>" prefix.
+  let repeat = 1;
+  const repeatMatch = text.match(/^\s*--\s*(\d+|\?)\s*times\s*\r?\n/i);
+  if (repeatMatch) {
+    repeat = repeatMatch[1] === '?' ? null : Number(repeatMatch[1]);
+    text = text.slice(repeatMatch[0].length);
+  }
+  text = text.replace(/\s+/g, ' ').trim();
+  if (text === '') return null;
+  // Transaction/session noise is not a behavioral signal.
+  if (/^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SET|SHOW|PRAGMA)\b/i.test(text)) return null;
+  const op = (SQL_OPS.find((candidate) => new RegExp(`^${candidate}\\b`, 'i').test(text)) ?? 'OTHER').toUpperCase();
+  return { op, tables: extractTables(text), filters: extractFilterColumns(text), repeat };
+}
+
+function stripSqlQuotes(identifier) {
+  return identifier.replace(/["`]/g, '');
+}
+
+function extractTables(text) {
+  const tables = new Set();
+  const re = /\b(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z_][\w."]*)/gi;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    tables.add(stripSqlQuotes(match[1]).toLowerCase());
+  }
+  return [...tables].sort();
+}
+
+function extractFilterColumns(text) {
+  // Columns in WHERE/ON/HAVING predicates — the access-control- and correctness-
+  // relevant surface. Take each clause body up to the next clause boundary and
+  // pull identifiers sitting immediately left of a comparison operator. Heuristic
+  // but deterministic, which is all a fingerprint needs.
+  const cols = new Set();
+  const clauseRe = /\b(?:WHERE|ON|HAVING)\b(.*?)(?:\bGROUP BY\b|\bORDER BY\b|\bLIMIT\b|\bRETURNING\b|$)/gis;
+  let clause;
+  while ((clause = clauseRe.exec(text)) !== null) {
+    const colRe = /([A-Za-z_][\w."]*)\s*(?:=|<>|!=|<=|>=|<|>|\bIN\b|\bIS\b|\bLIKE\b|\bBETWEEN\b)/gi;
+    let column;
+    while ((column = colRe.exec(clause[1])) !== null) {
+      const ident = stripSqlQuotes(column[1]).toLowerCase();
+      if (!['and', 'or', 'not', 'null', 'true', 'false'].includes(ident)) cols.add(ident);
+    }
+  }
+  return [...cols].sort();
+}
+
+function sqlFingerprintKey(fingerprint) {
+  return `${fingerprint.op} {${fingerprint.tables.join(',')}} [${fingerprint.filters.join(',')}]`;
+}
+
+function collectSqlProfile(rootActions) {
+  const profile = new Map(); // key -> { fingerprint, count }
+  const visit = (actions) => {
+    for (const action of actions ?? []) {
+      if (action.sql) {
+        const key = sqlFingerprintKey(action.sql);
+        const entry = profile.get(key) ?? { fingerprint: action.sql, count: 0 };
+        entry.count += action.sql.repeat === null ? 1 : action.sql.repeat;
+        profile.set(key, entry);
+      }
+      visit(action.children);
+    }
+  };
+  visit(rootActions);
+  return profile;
+}
+
+function diffSqlProfiles(baseline, current, changes) {
+  const baseProfile = collectSqlProfile(baseline.rootActions ?? []);
+  const currProfile = collectSqlProfile(current.rootActions ?? []);
+  for (const [key, entry] of currProfile) {
+    if (!baseProfile.has(key)) {
+      changes.push({ type: 'sql_query_added', key, op: entry.fingerprint.op, tables: entry.fingerprint.tables, filters: entry.fingerprint.filters, count: entry.count });
+    }
+  }
+  for (const [key, entry] of baseProfile) {
+    if (!currProfile.has(key)) {
+      changes.push({ type: 'sql_query_removed', key, op: entry.fingerprint.op, tables: entry.fingerprint.tables, filters: entry.fingerprint.filters, count: entry.count });
+    }
+  }
+  for (const [key, entry] of currProfile) {
+    const baseEntry = baseProfile.get(key);
+    if (baseEntry && baseEntry.count !== entry.count) {
+      changes.push({ type: 'sql_count_changed', key, op: entry.fingerprint.op, before: baseEntry.count, after: entry.count });
+    }
+  }
+}
+
 function diffNormalizedSequences(baseline, current) {
   const changes = [];
 
@@ -418,9 +532,18 @@ function diffNormalizedSequences(baseline, current) {
   }
 
   diffActionLists(baseline.rootActions ?? [], current.rootActions ?? [], 'rootActions', changes);
+  diffSqlProfiles(baseline, current, changes);
+
+  // `elapsedBucket` is wall-clock timing: it drifts across bucket boundaries between two
+  // recordings of identical code, so a timing-only delta is noise, not a behavioral change.
+  // Keep it in `changes` (a dramatic le_1ms -> gt_1000ms shift is still worth a human glance),
+  // but don't let it mark an entry changed/flagged on its own — otherwise every run flags timing
+  // jitter, and an auth trace's jitter even raises a false high security-review.
+  const isTimingOnly = (change) => change.type === 'action_changed' && change.field === 'elapsedBucket';
+  const behavioralChanges = changes.filter((change) => !isTimingOnly(change));
 
   return {
-    changed: changes.length > 0,
+    changed: behavioralChanges.length > 0,
     summary: summarizeChanges(changes),
     changes,
   };
@@ -522,6 +645,40 @@ function buildFindings(entry, diff) {
     });
   }
 
+  // A vanished query shape is the access-control & correctness red flag: a dropped
+  // WHERE/JOIN predicate (fog-of-war / authorization filter), or a guard read that
+  // no longer runs. High on a security-relevant path, medium otherwise.
+  const sqlRemoved = diff.changes.filter((change) => change.type === 'sql_query_removed');
+  if (sqlRemoved.length > 0) {
+    findings.push({
+      severity: securityRelevant || sqlRemoved.some((change) => change.op === 'SELECT') ? 'high' : 'medium',
+      category: 'sql-query-removed',
+      message: 'A SQL query shape disappeared from this path (a dropped WHERE/JOIN predicate, a guard query that no longer runs, or a removed read). Confirm no access-control or correctness check was lost.',
+    });
+  }
+
+  // A new write or newly-touched table is a side effect worth confirming.
+  const sqlWritesAdded = diff.changes.filter(
+    (change) => change.type === 'sql_query_added' && (change.op === 'INSERT' || change.op === 'UPDATE' || change.op === 'DELETE'),
+  );
+  if (sqlWritesAdded.length > 0) {
+    findings.push({
+      severity: 'medium',
+      category: 'sql-write-added',
+      message: 'A new INSERT/UPDATE/DELETE shape appears on this path. Confirm the new write is intended.',
+    });
+  }
+
+  // Same query shape, more executions => N+1 / fan-out (often a query inside a loop).
+  const sqlFanOut = diff.changes.filter((change) => change.type === 'sql_count_changed' && change.after > change.before);
+  if (sqlFanOut.length > 0) {
+    findings.push({
+      severity: 'medium',
+      category: 'sql-n-plus-one',
+      message: 'A SQL query shape now runs more times than the baseline (possible N+1 / fan-out). Check for a query issued inside a loop.',
+    });
+  }
+
   if (findings.length === 0) {
     findings.push({
       severity: 'low',
@@ -578,6 +735,13 @@ function formatChange(change) {
   }
   if (change.type === 'action_added' || change.type === 'action_removed') {
     return `${change.type.replaceAll('_', ' ')} at ${change.path}: ${change.id ?? change.name}`;
+  }
+  if (change.type === 'sql_query_added' || change.type === 'sql_query_removed') {
+    const filters = change.filters && change.filters.length ? ` filter[${change.filters.join(',')}]` : '';
+    return `${change.type.replaceAll('_', ' ')}: ${change.op} {${change.tables.join(',')}}${filters} (x${change.count})`;
+  }
+  if (change.type === 'sql_count_changed') {
+    return `sql count changed: ${change.key} ${change.before} -> ${change.after}`;
   }
   return `${change.type.replaceAll('_', ' ')} at ${change.path} field ${change.field}: ${change.before} -> ${change.after}`;
 }
@@ -761,7 +925,7 @@ function parseScalar(raw) {
   return value;
 }
 
-export { parseYaml };
+export { parseYaml, normalizeSql, sqlFingerprintKey, normalizeAction, diffNormalizedSequences };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

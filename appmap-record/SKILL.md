@@ -166,6 +166,26 @@ Automatic for Django, Flask, and FastAPI when running in development mode:
 - **Flask**: run with `--debug`
 - **FastAPI/uvicorn**: run with `--reload`
 
+### Capture SQL (SQLAlchemy)
+
+The Python agent auto-instruments SQL for **Django and Flask** (via their
+import hooks), but **not bare SQLAlchemy**: the listener ships in
+`appmap/sqlalchemy.py` and is never auto-imported, so a plain SQLAlchemy
+app or test silently records **no** `sql_query` events. Import it once,
+early, while recording:
+
+```python
+# conftest.py (tests) or your app's startup — guarded so non-recording runs pay nothing
+import os
+if os.environ.get("APPMAP"):
+    import appmap.sqlalchemy  # registers the SQLAlchemy SQL-capture listener
+```
+
+The listener binds to SQLAlchemy's `Engine` class, so importing it before
+any engine runs a query covers every engine created afterward. Confirm it
+worked: the recording's `metadata.frameworks` lists `SQLAlchemy` and
+`find_queries` is non-empty.
+
 ### Record a process
 
 ```sh
@@ -199,6 +219,11 @@ See https://appmap.io/docs/reference/appmap-python.html
 - Check that `APPMAP_RECORD_PYTEST=false` or `APPMAP_RECORD_UNITTEST=false`
   are not set.
 
+**No SQL queries in the recording** (`find_queries` empty, `metadata.frameworks`
+lacks `SQLAlchemy`):
+- AppMap auto-wires SQL for Django/Flask but **not bare SQLAlchemy**. Import
+  `appmap.sqlalchemy` once while recording — see "Capture SQL (SQLAlchemy)".
+
 **`RuntimeError: "Recording already in progress"`:**
 - This occurs when `APPMAP_RECORD_PROCESS=true` conflicts with another
   recording method (requests, remote, tests). Process recording is
@@ -220,7 +245,8 @@ See https://appmap.io/docs/reference/appmap-python.html
 - Use `appmap-python --enable-log` to explicitly create log files.
 
 **Supported versions:** Python 3.8-3.12, Django 3.2-<5, Flask 2-3,
-FastAPI ~0.110.0, pytest ~6, SQLAlchemy ~1.
+FastAPI ~0.110.0, pytest ~6, SQLAlchemy 1-2 (2.x SQL capture verified with the
+`appmap.sqlalchemy` import above).
 
 ---
 

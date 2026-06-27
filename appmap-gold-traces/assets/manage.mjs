@@ -9,12 +9,30 @@
 //   node <skill>/assets/manage.mjs compare --dir gold_traces --record
 //   node <skill>/assets/manage.mjs update  --dir gold_traces --only test_foo
 //
-// The script stores only raw baseline AppMaps and derives sequence/normalized
-// artifacts at compare time. It uses AppMap's JSON sequence-diagram export as
-// the comparison surface, then normalizes away minor volatility (actor
-// ordering, event ids, exact timings) while retaining coarse elapsed-time
-// buckets.
+// The script stores only raw baseline AppMaps and derives sequence/diff
+// artifacts at compare time. Comparison is a two-tier pass per recording:
+//
+//   1. HIGH-LEVEL  Export each AppMap to AppMap's JSON sequence diagram and
+//      compare a single digest over the root subtree digests. Equal digests =
+//      no behavioral change, full stop. The digest is built from AppMap's
+//      `stableProperties` (normalized SQL, code-object identity, exceptions) and
+//      explicitly excludes volatile data — elapsed time, object ids, parameter
+//      and return *values*, random strings — so timing jitter and unstable test
+//      data never register as a change.
+//
+//   2. DRILL-DOWN  When the digests differ, run `appmap sequence-diagram-diff`
+//      (an edit-distance alignment, robust to inserted/removed frames) to get
+//      the structured diff (added/removed/changed actions) and a compact text
+//      rendering for the report. Each changed action is classified into a
+//      finding; severity is raised when the action carries a `security.*`
+//      AppMap label (read straight from the diagram) or sits on an auth path.
+//
+// SQL is normalized to a structural FINGERPRINT (operation + tables + WHERE/
+// JOIN/HAVING columns) only to *classify* a changed query: a projection-only
+// change stays quiet (low), while a dropped predicate, a new write, or a newly
+// touched table is loud. The alignment itself is done by the AppMap CLI.
 
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -22,6 +40,11 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 const securityPattern = /auth|token|session|jwt|security|identity|login|claim|verify|permission|credential|secret/i;
+const securityLabelPattern = /^security\./;
+
+// Sequence-diagram node + diff enums (mirror @appland/sequence-diagram `types.ts`).
+const NodeType = { Loop: 1, Conditional: 2, Function: 3, ServerRPC: 4, ClientRPC: 5, Query: 6 };
+const DiffMode = { Insert: 1, Delete: 2, Change: 3 };
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
@@ -177,6 +200,11 @@ async function loadConfig(configPath) {
     record: commands.record ?? null,
     record_env: stringifyEnv(commands.record_env ?? {}),
     appmap_cli: commands.appmap_cli ?? 'appmap',
+    // Optional per-run expand list: package code-object ids rendered at function
+    // granularity in the diagram. Default empty — package granularity is enough
+    // for detection (every recorded function is still a node), so this is a
+    // presentation knob for security-critical traces only.
+    expand: Array.isArray(config.expand) ? config.expand.map(String) : [],
   };
 }
 
@@ -243,10 +271,12 @@ async function compareAgainstBaseline(env, entries, options) {
     entries: [],
   };
 
-  const compareCurrentSequenceDir = tempSequenceDir(env, 'compare-current');
-  const compareBaselineSequenceDir = tempSequenceDir(env, 'compare-baseline');
-  await ensureDir(compareCurrentSequenceDir);
-  await ensureDir(compareBaselineSequenceDir);
+  const baselineSequenceDir = tempSequenceDir(env, 'compare-baseline');
+  const currentSequenceDir = tempSequenceDir(env, 'compare-current');
+  const diffDir = path.join(env.tempRoot, 'compare-diff');
+  await ensureDir(baselineSequenceDir);
+  await ensureDir(currentSequenceDir);
+  await ensureDir(diffDir);
 
   for (const entry of entries) {
     const baselineAppMap = baselineAppMapPath(env, entry);
@@ -254,17 +284,40 @@ async function compareAgainstBaseline(env, entries, options) {
     await assertExists(baselineAppMap, `Missing baseline AppMap for ${entry.test_name}`);
     await assertExists(currentAppMap, `Missing current AppMap for ${entry.test_name}`);
 
-    const baselineSequence = await exportSequenceDiagram(env, baselineAppMap, compareBaselineSequenceDir, entry);
-    const baseline = await normalizeSequenceFile(baselineSequence);
-    const currentSequence = await exportSequenceDiagram(env, currentAppMap, compareCurrentSequenceDir, entry);
-    const current = await normalizeSequenceFile(currentSequence);
-    const diff = diffNormalizedSequences(baseline, current);
-    const flaggedFindings = buildFindings(entry, diff);
+    const baselineSeqFile = await exportSequenceDiagram(env, baselineAppMap, baselineSequenceDir, entry);
+    const currentSeqFile = await exportSequenceDiagram(env, currentAppMap, currentSequenceDir, entry);
+    const baseline = await readJson(baselineSeqFile);
+    const current = await readJson(currentSeqFile);
 
-    if (diff.changed) {
+    // 1. High-level pass: a single digest over the root subtree digests. Equal =
+    //    no behavioral change. Volatile data is not in the digest, so this is
+    //    immune to timing jitter and unstable test data.
+    const changed = diagramDigest(baseline) !== diagramDigest(current);
+
+    let summary;
+    let findings = [];
+    let textDiff = '';
+    let diffActions = [];
+    let actorDelta = { added: [], removed: [] };
+
+    if (!changed) {
+      summary = 'No behavioral change (sequence-diagram digest identical).';
+    } else {
+      // 2. Drill-down: edit-distance diff via the AppMap CLI.
+      const diffEntryDir = path.join(diffDir, safeName(entry.test_name));
+      await ensureDir(diffEntryDir);
+      const diffDiagram = await runSequenceDiff(env, baselineSeqFile, currentSeqFile, diffEntryDir, 'json');
+      textDiff = await runSequenceDiffText(env, baselineSeqFile, currentSeqFile, diffEntryDir);
+      diffActions = diffDiagram ? collectDiffActions(diffDiagram) : [];
+      actorDelta = diffActors(baseline, current);
+      findings = classifyChanges(entry, diffActions, actorDelta);
+      summary = summarizeChanges(diffActions, actorDelta);
+    }
+
+    if (changed) {
       report.changed += 1;
     }
-    if (flaggedFindings.length > 0) {
+    if (findings.length > 0) {
       report.flagged += 1;
     }
 
@@ -273,10 +326,12 @@ async function compareAgainstBaseline(env, entries, options) {
       test_file: entry.test_file,
       test_name: entry.test_name,
       appmap_path: entry.appmap_path,
-      changed: diff.changed,
-      summary: diff.summary,
-      findings: flaggedFindings,
-      diff,
+      changed,
+      summary,
+      findings,
+      changes: diffActions,
+      actor_delta: actorDelta,
+      text_diff: textDiff,
     });
   }
 
@@ -315,15 +370,24 @@ async function rerecordEntries(env, entries) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// AppMap CLI surface (sequence-diagram export + diff)
+// ---------------------------------------------------------------------------
+
+function cliInvocation(env) {
+  const [bin, ...prefix] = env.config.appmap_cli.split(/\s+/).filter(Boolean);
+  return { bin, prefix };
+}
+
 async function exportSequenceDiagram(env, appmapFile, outputDir, entry) {
   await ensureDir(outputDir);
   const before = new Set(await listJsonFiles(outputDir));
-  const [bin, ...prefix] = env.config.appmap_cli.split(/\s+/).filter(Boolean);
-  runCommand(
-    bin,
-    [...prefix, 'sequence-diagram', appmapFile, '--directory', env.workingDir, '--format', 'json', '--output-dir', outputDir],
-    { cwd: env.workingDir },
-  );
+  const { bin, prefix } = cliInvocation(env);
+  const args = [...prefix, 'sequence-diagram', appmapFile, '--directory', env.workingDir, '--format', 'json', '--output-dir', outputDir];
+  for (const id of env.config.expand) {
+    args.push('--expand', id);
+  }
+  runCommandQuiet(bin, args, { cwd: env.workingDir });
   const after = new Set(await listJsonFiles(outputDir));
   for (const candidate of after) {
     if (!before.has(candidate)) {
@@ -336,89 +400,146 @@ async function exportSequenceDiagram(env, appmapFile, outputDir, entry) {
   return fallback;
 }
 
-// ---------------------------------------------------------------------------
-// Normalization + diff (the comparison surface)
-// ---------------------------------------------------------------------------
-
-async function normalizeSequenceFile(sequencePath) {
-  const data = JSON.parse(await fs.readFile(sequencePath, 'utf8'));
-  return {
-    actors: (data.actors ?? [])
-      .map((actor) => ({ id: actor.id ?? null, name: actor.name ?? null }))
-      .sort((left, right) => String(left.id).localeCompare(String(right.id))),
-    rootActions: (data.rootActions ?? []).map(normalizeAction),
-  };
+// Run `sequence-diagram-diff` in JSON form and return the parsed diff diagram, or
+// null when the two diagrams turn out to be identical (no diff file produced).
+async function runSequenceDiff(env, baseFile, headFile, outputDir, format) {
+  const { bin, prefix } = cliInvocation(env);
+  runCommandQuiet(
+    bin,
+    [...prefix, 'sequence-diagram-diff', baseFile, headFile, '--format', format, '--output-dir', outputDir],
+    { cwd: env.workingDir },
+  );
+  const diffFile = path.join(outputDir, `diff.${format}`);
+  const raw = await readFileOrNull(diffFile);
+  return raw === null ? null : JSON.parse(raw);
 }
 
-function normalizeAction(action) {
-  return {
-    nodeType: action.nodeType ?? null,
-    caller: action.caller ?? null,
-    callee: action.callee ?? null,
-    name: action.name ?? null,
-    static: Boolean(action.static),
-    elapsedBucket: bucketElapsed(action.elapsed),
-    stable: {
-      event_type: action.stableProperties?.event_type ?? null,
-      id: action.stableProperties?.id ?? null,
-      raises_exception: Boolean(action.stableProperties?.raises_exception),
-    },
-    returnValue: normalizeReturnValue(action.returnValue),
-    sql: normalizeSql(action.query),
-    children: (action.children ?? []).map(normalizeAction),
-  };
-}
-
-function bucketElapsed(elapsedSeconds) {
-  if (typeof elapsedSeconds !== 'number' || Number.isNaN(elapsedSeconds) || elapsedSeconds < 0) {
-    return null;
-  }
-  const elapsedMs = elapsedSeconds * 1000;
-  if (elapsedMs <= 0.1) return 'le_0.1ms';
-  if (elapsedMs <= 1) return 'le_1ms';
-  if (elapsedMs <= 10) return 'le_10ms';
-  if (elapsedMs <= 100) return 'le_100ms';
-  if (elapsedMs <= 1000) return 'le_1000ms';
-  return 'gt_1000ms';
-}
-
-function normalizeReturnValue(returnValue) {
-  if (!returnValue) {
-    return null;
-  }
-  return {
-    raisesException: Boolean(returnValue.raisesException),
-    type: normalizeReturnType(returnValue.returnValueType),
-  };
-}
-
-function normalizeReturnType(typeInfo) {
-  if (!typeInfo) {
-    return null;
-  }
-  return {
-    name: typeInfo.name ?? null,
-    properties: [...(typeInfo.properties ?? [])].sort(),
-  };
+async function runSequenceDiffText(env, baseFile, headFile, outputDir) {
+  const { bin, prefix } = cliInvocation(env);
+  runCommandQuiet(
+    bin,
+    [...prefix, 'sequence-diagram-diff', baseFile, headFile, '--format', 'text', '--output-dir', outputDir],
+    { cwd: env.workingDir },
+  );
+  return (await readFileOrNull(path.join(outputDir, 'diff.txt'))) ?? '';
 }
 
 // ---------------------------------------------------------------------------
-// SQL fingerprinting
+// High-level pass: diagram digest
+// ---------------------------------------------------------------------------
+
+// Mirror @appland/cli SequenceDiagramDigest: a single sha256 over the root
+// subtree digests. The subtree digests come straight from the diagram and carry
+// only AppMap `stableProperties`, so elapsed time, object ids, and value-level
+// volatility are already excluded.
+function diagramDigest(diagram) {
+  const hash = createHash('sha256');
+  for (const action of diagram.rootActions ?? []) {
+    hash.update(action.subtreeDigest ?? '');
+  }
+  return hash.digest('hex');
+}
+
+// ---------------------------------------------------------------------------
+// Drill-down: walk the diff diagram
+// ---------------------------------------------------------------------------
+
+// Flatten the diff diagram into the actions that actually changed. An action with
+// no `diffMode` is unchanged (the alignment kept it in place); we still recurse
+// into its children, since a parent can be unchanged while a descendant differs.
+function collectDiffActions(diagram) {
+  const out = [];
+  // `ancestorSecurity` carries a security.* label seen on any enclosing action.
+  // A changed child query/log/etc. is the *evidence* of a behavior change, but the
+  // security label usually sits on the enclosing function (which may itself be
+  // unchanged). Propagating the label down lets a changed descendant inherit the
+  // security context of its labeled ancestor.
+  const visit = (action, depth, ancestorSecurity) => {
+    const ownLabels = Array.isArray(action.labels) ? action.labels : [];
+    const securityContext = ancestorSecurity || ownLabels.some((label) => securityLabelPattern.test(label));
+    if (action.diffMode !== undefined && action.nodeType !== NodeType.Loop) {
+      out.push({
+        diffMode: action.diffMode,
+        nodeType: action.nodeType,
+        name: nodeLabel(action),
+        formerName: action.formerName ?? null,
+        formerResult: action.formerResult ?? null,
+        id: action.stableProperties?.id ?? null,
+        labels: ownLabels,
+        securityContext,
+        query: action.nodeType === NodeType.Query ? (action.query ?? null) : null,
+        raisesException: Boolean(action.returnValue?.raisesException),
+        depth,
+      });
+    }
+    for (const child of action.children ?? []) {
+      visit(child, depth + 1, securityContext);
+    }
+  };
+  for (const root of diagram.rootActions ?? []) {
+    visit(root, 0, false);
+  }
+  return out;
+}
+
+function nodeLabel(action) {
+  if (action.nodeType === NodeType.Query) return 'SQL';
+  if (action.nodeType === NodeType.ServerRPC || action.nodeType === NodeType.ClientRPC) {
+    return action.route ?? 'HTTP';
+  }
+  return action.name ?? '(anonymous)';
+}
+
+function diffActors(baseline, current) {
+  const baseIds = new Set((baseline.actors ?? []).map((a) => a.id));
+  const currIds = new Set((current.actors ?? []).map((a) => a.id));
+  const added = [...currIds].filter((id) => !baseIds.has(id));
+  const removed = [...baseIds].filter((id) => !currIds.has(id));
+  return { added, removed };
+}
+
+const diffModeName = (mode) =>
+  mode === DiffMode.Insert ? 'added' : mode === DiffMode.Delete ? 'removed' : 'changed';
+
+function summarizeChanges(diffActions, actorDelta) {
+  if (diffActions.length === 0 && actorDelta.added.length === 0 && actorDelta.removed.length === 0) {
+    return 'Digest differs but no aligned action change was surfaced.';
+  }
+  const counts = new Map();
+  for (const action of diffActions) {
+    const key = `${diffModeName(action.diffMode)} ${nodeTypeName(action.nodeType)}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const parts = [...counts.entries()].map(([key, count]) => `${count} ${key}`);
+  if (actorDelta.added.length > 0) parts.push(`${actorDelta.added.length} actor added`);
+  if (actorDelta.removed.length > 0) parts.push(`${actorDelta.removed.length} actor removed`);
+  return parts.join(', ');
+}
+
+function nodeTypeName(nodeType) {
+  switch (nodeType) {
+    case NodeType.Function:
+      return 'function';
+    case NodeType.ServerRPC:
+      return 'server request';
+    case NodeType.ClientRPC:
+      return 'client request';
+    case NodeType.Query:
+      return 'SQL';
+    default:
+      return 'action';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SQL fingerprinting (classification only)
 //
-// The sequence diagram carries the full statement on each database action in
-// `action.query` (appmap prefixes executemany with "-- N times"). The positional
-// action diff deliberately ignores it: a benign projection change (a new SELECT
-// column) would otherwise flag every query node, and the positional walk is
-// already fragile to inserted frames. Instead we reduce each statement to a
-// structural FINGERPRINT — operation + tables + filter (WHERE/JOIN/HAVING)
-// columns — and diff the per-sequence MULTISET of fingerprints, order-independent.
-// That surfaces the regressions a reviewer cares about while staying quiet on
-// cosmetics:
-//   - a dropped WHERE/JOIN predicate, or a query that no longer runs -> removed
-//   - a new write, or a newly touched table                          -> added
-//   - the same query now run more times (N+1 / fan-out)              -> count delta
-//   - a new projected column (e.g. `abandoned_at`)         -> same fingerprint (quiet)
-// Literals, bind params, projection lists, aliases, and whitespace are stripped.
+// The CLI does the alignment; the fingerprint only decides how loud a changed
+// query is. We reduce a statement to operation + tables + filter (WHERE/JOIN/
+// HAVING) columns. A projection-only change (a new SELECT column) keeps the same
+// fingerprint and stays quiet; a dropped predicate, a new write, or a newly
+// touched table is loud.
+// ---------------------------------------------------------------------------
 
 const SQL_OPS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH'];
 
@@ -426,10 +547,8 @@ function normalizeSql(query) {
   if (typeof query !== 'string') return null;
   let text = query;
   // appmap collapses executemany into a "-- N times\n<stmt>" prefix.
-  let repeat = 1;
   const repeatMatch = text.match(/^\s*--\s*(\d+|\?)\s*times\s*\r?\n/i);
   if (repeatMatch) {
-    repeat = repeatMatch[1] === '?' ? null : Number(repeatMatch[1]);
     text = text.slice(repeatMatch[0].length);
   }
   text = text.replace(/\s+/g, ' ').trim();
@@ -437,7 +556,7 @@ function normalizeSql(query) {
   // Transaction/session noise is not a behavioral signal.
   if (/^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SET|SHOW|PRAGMA)\b/i.test(text)) return null;
   const op = (SQL_OPS.find((candidate) => new RegExp(`^${candidate}\\b`, 'i').test(text)) ?? 'OTHER').toUpperCase();
-  return { op, tables: extractTables(text), filters: extractFilterColumns(text), repeat };
+  return { op, tables: extractTables(text), filters: extractFilterColumns(text) };
 }
 
 function stripSqlQuotes(identifier) {
@@ -455,10 +574,6 @@ function extractTables(text) {
 }
 
 function extractFilterColumns(text) {
-  // Columns in WHERE/ON/HAVING predicates — the access-control- and correctness-
-  // relevant surface. Take each clause body up to the next clause boundary and
-  // pull identifiers sitting immediately left of a comparison operator. Heuristic
-  // but deterministic, which is all a fingerprint needs.
   const cols = new Set();
   const clauseRe = /\b(?:WHERE|ON|HAVING)\b(.*?)(?:\bGROUP BY\b|\bORDER BY\b|\bLIMIT\b|\bRETURNING\b|$)/gis;
   let clause;
@@ -473,171 +588,109 @@ function extractFilterColumns(text) {
   return [...cols].sort();
 }
 
-function sqlFingerprintKey(fingerprint) {
+function sameFingerprintKey(fingerprint) {
+  if (!fingerprint) return '';
   return `${fingerprint.op} {${fingerprint.tables.join(',')}} [${fingerprint.filters.join(',')}]`;
 }
 
-function collectSqlProfile(rootActions) {
-  const profile = new Map(); // key -> { fingerprint, count }
-  const visit = (actions) => {
-    for (const action of actions ?? []) {
-      if (action.sql) {
-        const key = sqlFingerprintKey(action.sql);
-        const entry = profile.get(key) ?? { fingerprint: action.sql, count: 0 };
-        entry.count += action.sql.repeat === null ? 1 : action.sql.repeat;
-        profile.set(key, entry);
-      }
-      visit(action.children);
-    }
-  };
-  visit(rootActions);
-  return profile;
-}
+// ---------------------------------------------------------------------------
+// Classification
+// ---------------------------------------------------------------------------
 
-function diffSqlProfiles(baseline, current, changes) {
-  const baseProfile = collectSqlProfile(baseline.rootActions ?? []);
-  const currProfile = collectSqlProfile(current.rootActions ?? []);
-  for (const [key, entry] of currProfile) {
-    if (!baseProfile.has(key)) {
-      changes.push({ type: 'sql_query_added', key, op: entry.fingerprint.op, tables: entry.fingerprint.tables, filters: entry.fingerprint.filters, count: entry.count });
-    }
-  }
-  for (const [key, entry] of baseProfile) {
-    if (!currProfile.has(key)) {
-      changes.push({ type: 'sql_query_removed', key, op: entry.fingerprint.op, tables: entry.fingerprint.tables, filters: entry.fingerprint.filters, count: entry.count });
-    }
-  }
-  for (const [key, entry] of currProfile) {
-    const baseEntry = baseProfile.get(key);
-    if (baseEntry && baseEntry.count !== entry.count) {
-      changes.push({ type: 'sql_count_changed', key, op: entry.fingerprint.op, before: baseEntry.count, after: entry.count });
-    }
-  }
-}
-
-function diffNormalizedSequences(baseline, current) {
-  const changes = [];
-
-  const baselineActors = new Set((baseline.actors ?? []).map((actor) => actor.id));
-  const currentActors = new Set((current.actors ?? []).map((actor) => actor.id));
-  for (const actor of currentActors) {
-    if (!baselineActors.has(actor)) {
-      changes.push({ type: 'actor_added', actor });
-    }
-  }
-  for (const actor of baselineActors) {
-    if (!currentActors.has(actor)) {
-      changes.push({ type: 'actor_removed', actor });
-    }
-  }
-
-  diffActionLists(baseline.rootActions ?? [], current.rootActions ?? [], 'rootActions', changes);
-  diffSqlProfiles(baseline, current, changes);
-
-  // `elapsedBucket` is wall-clock timing: it drifts across bucket boundaries between two
-  // recordings of identical code, so a timing-only delta is noise, not a behavioral change.
-  // Keep it in `changes` (a dramatic le_1ms -> gt_1000ms shift is still worth a human glance),
-  // but don't let it mark an entry changed/flagged on its own — otherwise every run flags timing
-  // jitter, and an auth trace's jitter even raises a false high security-review.
-  const isTimingOnly = (change) => change.type === 'action_changed' && change.field === 'elapsedBucket';
-  const behavioralChanges = changes.filter((change) => !isTimingOnly(change));
-
-  return {
-    changed: behavioralChanges.length > 0,
-    summary: summarizeChanges(changes),
-    changes,
-  };
-}
-
-function diffActionLists(baselineActions, currentActions, pathLabel, changes) {
-  const count = Math.max(baselineActions.length, currentActions.length);
-  for (let index = 0; index < count; index += 1) {
-    const baselineAction = baselineActions[index];
-    const currentAction = currentActions[index];
-    const currentPath = `${pathLabel}[${index}]`;
-    if (!baselineAction && currentAction) {
-      changes.push({ type: 'action_added', path: currentPath, id: currentAction.stable.id, name: currentAction.name });
-      continue;
-    }
-    if (baselineAction && !currentAction) {
-      changes.push({ type: 'action_removed', path: currentPath, id: baselineAction.stable.id, name: baselineAction.name });
-      continue;
-    }
-    diffAction(baselineAction, currentAction, currentPath, changes);
-  }
-}
-
-function diffAction(baselineAction, currentAction, currentPath, changes) {
-  const fields = [
-    ['caller', baselineAction.caller, currentAction.caller],
-    ['callee', baselineAction.callee, currentAction.callee],
-    ['name', baselineAction.name, currentAction.name],
-    ['static', baselineAction.static, currentAction.static],
-    ['elapsedBucket', baselineAction.elapsedBucket, currentAction.elapsedBucket],
-    ['stable.id', baselineAction.stable.id, currentAction.stable.id],
-    ['stable.event_type', baselineAction.stable.event_type, currentAction.stable.event_type],
-    ['stable.raises_exception', baselineAction.stable.raises_exception, currentAction.stable.raises_exception],
-    ['returnValue', JSON.stringify(baselineAction.returnValue), JSON.stringify(currentAction.returnValue)],
-  ];
-
-  for (const [field, baselineValue, currentValue] of fields) {
-    if (baselineValue !== currentValue) {
-      changes.push({
-        type: 'action_changed',
-        path: currentPath,
-        field,
-        before: baselineValue,
-        after: currentValue,
-        id: currentAction.stable.id ?? baselineAction.stable.id,
-        name: currentAction.name ?? baselineAction.name,
-      });
-    }
-  }
-
-  diffActionLists(baselineAction.children, currentAction.children, `${currentPath}.children`, changes);
-}
-
-function summarizeChanges(changes) {
-  if (changes.length === 0) {
-    return 'No structural behavior changes after normalization.';
-  }
-  const counts = new Map();
-  for (const change of changes) {
-    counts.set(change.type, (counts.get(change.type) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([type, count]) => `${count} ${type.replaceAll('_', ' ')}`)
-    .join(', ');
-}
-
-function buildFindings(entry, diff) {
-  if (!diff.changed) {
+function classifyChanges(entry, diffActions, actorDelta) {
+  if (diffActions.length === 0 && actorDelta.added.length === 0 && actorDelta.removed.length === 0) {
     return [];
   }
 
   const findings = [];
-  const securityRelevant = entry.feature === 'auth' || diff.changes.some((change) => securityPattern.test(JSON.stringify(change)));
+
+  // Security: prefer AppMap labels (read from the diagram), fall back to the
+  // feature flag and a name heuristic. A label on *any* changed action wins.
+  const labeledSecurity = diffActions.some((action) => action.securityContext);
+  const securityRelevant =
+    labeledSecurity ||
+    entry.feature === 'auth' ||
+    entry.feature === 'authz' ||
+    diffActions.some((action) => securityPattern.test(action.name ?? '') || securityPattern.test(action.formerName ?? ''));
   if (securityRelevant) {
     findings.push({
       severity: 'high',
       category: 'security-review',
-      message: 'Behavior changed in a security-sensitive area. Review auth, token, session, identity, or permission side effects.',
+      message: labeledSecurity
+        ? 'A security-labeled action changed. Review the auth/identity/permission side effects on this path.'
+        : 'Behavior changed on a security-sensitive path. Review auth, token, session, identity, or permission side effects.',
     });
   }
 
-  const exceptionChanges = diff.changes.filter(
-    (change) => change.type === 'action_changed' && (change.field === 'stable.raises_exception' || change.field === 'returnValue'),
+  // SQL queries that vanished: a dropped WHERE/JOIN predicate, a guard query that
+  // no longer runs, or a removed read — the access-control & correctness red flag.
+  const sqlRemoved = diffActions.filter((a) => a.nodeType === NodeType.Query && a.diffMode === DiffMode.Delete);
+  if (sqlRemoved.length > 0) {
+    const anySelect = sqlRemoved.some((a) => normalizeSql(a.query)?.op === 'SELECT');
+    findings.push({
+      severity: securityRelevant || anySelect ? 'high' : 'medium',
+      category: 'sql-query-removed',
+      message: 'A SQL query disappeared from this path (a dropped WHERE/JOIN predicate, a guard query that no longer runs, or a removed read). Confirm no access-control or correctness check was lost.',
+    });
+  }
+
+  // New writes / newly-touched tables.
+  const sqlWritesAdded = diffActions.filter((a) => {
+    if (a.nodeType !== NodeType.Query || a.diffMode !== DiffMode.Insert) return false;
+    const op = normalizeSql(a.query)?.op;
+    return op === 'INSERT' || op === 'UPDATE' || op === 'DELETE';
+  });
+  if (sqlWritesAdded.length > 0) {
+    findings.push({
+      severity: 'medium',
+      category: 'sql-write-added',
+      message: 'A new INSERT/UPDATE/DELETE appears on this path. Confirm the new write is intended.',
+    });
+  }
+
+  // Changed query: projection-only stays quiet; a table/predicate change is loud.
+  const sqlChangedPredicate = diffActions.filter((a) => {
+    if (a.nodeType !== NodeType.Query || a.diffMode !== DiffMode.Change) return false;
+    return sameFingerprintKey(normalizeSql(a.formerName)) !== sameFingerprintKey(normalizeSql(a.query));
+  });
+  if (sqlChangedPredicate.length > 0) {
+    findings.push({
+      severity: securityRelevant ? 'high' : 'medium',
+      category: 'sql-query-changed',
+      message: 'A SQL query changed its tables or WHERE/JOIN predicate (not just projected columns). Confirm the access pattern is intended.',
+    });
+  }
+
+  // Same query shape inserted multiple times => possible N+1 / fan-out.
+  const insertedQueryKeys = new Map();
+  for (const action of diffActions) {
+    if (action.nodeType === NodeType.Query && action.diffMode === DiffMode.Insert) {
+      const key = sameFingerprintKey(normalizeSql(action.query));
+      insertedQueryKeys.set(key, (insertedQueryKeys.get(key) ?? 0) + 1);
+    }
+  }
+  if ([...insertedQueryKeys.values()].some((count) => count >= 2)) {
+    findings.push({
+      severity: 'medium',
+      category: 'sql-n-plus-one',
+      message: 'The same SQL query shape now runs multiple additional times (possible N+1 / fan-out). Check for a query issued inside a loop.',
+    });
+  }
+
+  // Exception / return-shape changes on a function.
+  const returnChanges = diffActions.filter(
+    (a) => a.nodeType === NodeType.Function && a.diffMode === DiffMode.Change && a.formerResult !== null,
   );
-  if (exceptionChanges.length > 0) {
+  if (returnChanges.length > 0) {
     findings.push({
       severity: 'medium',
       category: 'exception-behavior',
-      message: 'Exception or return-shape behavior changed. Check whether new failures, suppressed failures, or validation changes are intentional.',
+      message: 'A function changed its return shape or exception behavior. Check whether new failures, suppressed failures, or validation changes are intentional.',
     });
   }
 
-  const actorChanges = diff.changes.filter((change) => change.type === 'actor_added' || change.type === 'actor_removed');
-  if (actorChanges.length > 0) {
+  // Participating-package (actor) changes.
+  if (actorDelta.added.length > 0 || actorDelta.removed.length > 0) {
     findings.push({
       severity: 'medium',
       category: 'side-effects',
@@ -645,50 +698,20 @@ function buildFindings(entry, diff) {
     });
   }
 
-  // A vanished query shape is the access-control & correctness red flag: a dropped
-  // WHERE/JOIN predicate (fog-of-war / authorization filter), or a guard read that
-  // no longer runs. High on a security-relevant path, medium otherwise.
-  const sqlRemoved = diff.changes.filter((change) => change.type === 'sql_query_removed');
-  if (sqlRemoved.length > 0) {
-    findings.push({
-      severity: securityRelevant || sqlRemoved.some((change) => change.op === 'SELECT') ? 'high' : 'medium',
-      category: 'sql-query-removed',
-      message: 'A SQL query shape disappeared from this path (a dropped WHERE/JOIN predicate, a guard query that no longer runs, or a removed read). Confirm no access-control or correctness check was lost.',
-    });
-  }
-
-  // A new write or newly-touched table is a side effect worth confirming.
-  const sqlWritesAdded = diff.changes.filter(
-    (change) => change.type === 'sql_query_added' && (change.op === 'INSERT' || change.op === 'UPDATE' || change.op === 'DELETE'),
-  );
-  if (sqlWritesAdded.length > 0) {
-    findings.push({
-      severity: 'medium',
-      category: 'sql-write-added',
-      message: 'A new INSERT/UPDATE/DELETE shape appears on this path. Confirm the new write is intended.',
-    });
-  }
-
-  // Same query shape, more executions => N+1 / fan-out (often a query inside a loop).
-  const sqlFanOut = diff.changes.filter((change) => change.type === 'sql_count_changed' && change.after > change.before);
-  if (sqlFanOut.length > 0) {
-    findings.push({
-      severity: 'medium',
-      category: 'sql-n-plus-one',
-      message: 'A SQL query shape now runs more times than the baseline (possible N+1 / fan-out). Check for a query issued inside a loop.',
-    });
-  }
-
   if (findings.length === 0) {
     findings.push({
       severity: 'low',
       category: 'behavior-change',
-      message: 'Normalized call structure changed. Review whether the trace delta matches the intended feature work.',
+      message: 'Call structure changed. Review whether the trace delta matches the intended feature work.',
     });
   }
 
   return findings;
 }
+
+// ---------------------------------------------------------------------------
+// Report rendering
+// ---------------------------------------------------------------------------
 
 function renderMarkdownReport(report) {
   const lines = [];
@@ -714,36 +737,25 @@ function renderMarkdownReport(report) {
         lines.push(`  - [${finding.severity}] ${finding.category}: ${finding.message}`);
       }
     }
-    if (entry.diff.changes.length > 0) {
-      lines.push('- Changes:');
-      for (const change of entry.diff.changes.slice(0, 20)) {
-        lines.push(`  - ${formatChange(change)}`);
+    if (entry.actor_delta && (entry.actor_delta.added.length > 0 || entry.actor_delta.removed.length > 0)) {
+      const parts = [];
+      for (const id of entry.actor_delta.added) parts.push(`+${id}`);
+      for (const id of entry.actor_delta.removed) parts.push(`-${id}`);
+      lines.push(`- Participants: ${parts.join(', ')}`);
+    }
+    if (entry.text_diff && entry.text_diff.trim() !== '') {
+      lines.push('- Diff:');
+      lines.push('');
+      lines.push('  ```');
+      for (const line of entry.text_diff.replace(/\s+$/, '').split('\n')) {
+        lines.push(`  ${line}`);
       }
-      if (entry.diff.changes.length > 20) {
-        lines.push(`  - ... ${entry.diff.changes.length - 20} more changes`);
-      }
+      lines.push('  ```');
     }
     lines.push('');
   }
 
   return lines.join('\n') + '\n';
-}
-
-function formatChange(change) {
-  if (change.type === 'actor_added' || change.type === 'actor_removed') {
-    return `${change.type.replaceAll('_', ' ')}: ${change.actor}`;
-  }
-  if (change.type === 'action_added' || change.type === 'action_removed') {
-    return `${change.type.replaceAll('_', ' ')} at ${change.path}: ${change.id ?? change.name}`;
-  }
-  if (change.type === 'sql_query_added' || change.type === 'sql_query_removed') {
-    const filters = change.filters && change.filters.length ? ` filter[${change.filters.join(',')}]` : '';
-    return `${change.type.replaceAll('_', ' ')}: ${change.op} {${change.tables.join(',')}}${filters} (x${change.count})`;
-  }
-  if (change.type === 'sql_count_changed') {
-    return `sql count changed: ${change.key} ${change.before} -> ${change.after}`;
-  }
-  return `${change.type.replaceAll('_', ' ')} at ${change.path} field ${change.field}: ${change.before} -> ${change.after}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +772,10 @@ function baselineAppMapPath(env, entry) {
 
 function tempSequenceDir(env, name) {
   return path.join(env.tempRoot, name, 'sequences');
+}
+
+function safeName(name) {
+  return String(name).replace(/[^A-Za-z0-9_.-]+/g, '_');
 }
 
 // ---------------------------------------------------------------------------
@@ -780,6 +796,10 @@ async function listJsonFiles(dir) {
     }
     throw error;
   }
+}
+
+async function readJson(filePath) {
+  return JSON.parse(await fs.readFile(filePath, 'utf8'));
 }
 
 async function ensureDir(dir) {
@@ -805,13 +825,17 @@ async function assertExists(filePath, message) {
   }
 }
 
-function runCommand(command, args, options) {
-  const result = spawnSync(command, args, { stdio: 'inherit', ...options });
+// Run a command, capturing stdout/stderr. The AppMap CLI is chatty (per-export
+// "Printed diagram ..." lines, and @appland/models logs SQL it can't parse), so
+// we stay quiet on success and surface the captured output only on failure.
+function runCommandQuiet(command, args, options) {
+  const result = spawnSync(command, args, { encoding: 'utf8', ...options });
   if (result.error) {
     throw new Error(`Command failed to start: ${command} (${result.error.message})`);
   }
   if (result.status !== 0) {
-    throw new Error(`Command failed: ${command} ${args.join(' ')}`);
+    const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    throw new Error(`Command failed: ${command} ${args.join(' ')}\n${detail}`);
   }
 }
 
@@ -925,7 +949,7 @@ function parseScalar(raw) {
   return value;
 }
 
-export { parseYaml, normalizeSql, sqlFingerprintKey, normalizeAction, diffNormalizedSequences };
+export { parseYaml, normalizeSql, sameFingerprintKey, diagramDigest, collectDiffActions, classifyChanges };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

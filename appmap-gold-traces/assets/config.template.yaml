@@ -44,6 +44,16 @@ commands:
   record_env:
     APPMAP_DISPLAY_PARAMS: "true"
 
-  # The AppMap CLI used to export sequence diagrams for comparison. May include
-  # a runner prefix, e.g. "npx @appland/appmap". Defaults to "appmap".
+  # The AppMap CLI used to export sequence diagrams and diff them for comparison.
+  # May include a runner prefix, e.g. "npx @appland/appmap". Defaults to "appmap".
+  # Compare reads per-action `labels` from the diagram (for security severity), so
+  # the CLI must be a version that emits them in `sequence-diagram --format json`.
   appmap_cli: appmap
+
+# Optional. Package code-object ids to render at function granularity in the
+# diagram (passed as --expand to the CLI). Package granularity is enough for
+# DETECTION — every recorded function is still a node, so its change is caught —
+# so leave this empty unless you want a security-critical package broken out into
+# per-function swimlanes in the diff. Example:
+# expand:
+#   - "package:nova_server/graphql"

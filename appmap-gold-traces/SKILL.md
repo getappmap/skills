@@ -31,22 +31,42 @@ The model is **baseline → re-record → compare → classify → bless**:
    recordings they produce.
 2. The raw baseline AppMaps are committed under `baseline/appmaps/`.
 3. At compare time the engine exports each AppMap to AppMap's JSON
-   sequence-diagram form, **normalizes** away volatility (actor ordering, event
-   ids, literals/bind-params), then diffs three dimensions: the normalized call
-   trees, the set of participating packages (actors), and the **SQL profile** —
-   a per-sequence multiset of query **fingerprints** (operation + tables + WHERE/
-   JOIN filter columns), order-independent. The fingerprint strips projection
-   columns and literals, so a new `SELECT` column is quiet while a dropped
-   predicate, a new write, a newly-touched table, or the same query now run N
-   times (N+1) each shows up. Elapsed time is recorded as a coarse bucket but is
-   **not** treated as a behavioral change (timing jitter would flag every run).
-4. A report classifies each change and flags security-sensitive deltas —
-   including SQL: `sql-query-removed` (a dropped guard/filter or vanished read —
-   high on a security path), `sql-write-added`, and `sql-n-plus-one`.
+   sequence-diagram form and compares in **two tiers**:
+   - **High-level pass.** A single digest over the diagram's root subtree
+     digests. Equal digests = no behavioral change, full stop. The digest is
+     built from AppMap's `stableProperties` — normalized SQL (literals and
+     bind-params abstracted), code-object identity, exceptions — and **excludes**
+     volatile data: elapsed time, object ids, parameter/return *values*, and
+     random strings. So timing jitter and unstable test data never register.
+   - **Drill-down pass.** When the digests differ, it runs the AppMap CLI's
+     `sequence-diagram-diff` — an **edit-distance alignment**, robust to inserted
+     or removed frames (no positional cascade) — to get the changed actions plus
+     a compact text diff for the report.
+4. Each changed action is **classified** into a finding. Severity is raised to
+   **high** when the changed action — or any enclosing function — carries a
+   `security.*` AppMap **label** (read straight from the diagram), or the entry
+   is on an auth path. SQL findings use a structural **fingerprint** (operation +
+   tables + WHERE/JOIN columns) for severity only: a projection-only change stays
+   quiet, while `sql-query-removed` (a dropped guard/filter or vanished read),
+   `sql-write-added`, `sql-query-changed` (table/predicate), and `sql-n-plus-one`
+   each surface. Participating-package (actor) changes flag `side-effects`.
 5. You bless intended changes by copying the fresh recordings over the baseline.
 
-The engine stores **only** the raw baselines; sequence/normalized artifacts are
-derived under `.tmp/` and regenerated each run.
+The engine stores **only** the raw baselines; sequence/diff artifacts are derived
+under `.tmp/` and regenerated each run.
+
+**Security labels drive severity.** The high-severity security flag fires off
+AppMap `security.*` labels carried on the diagram, so the functions you want
+guarded must be **labeled** (see **appmap-label**). A label on a function also
+covers a change in its body — a new child query under a labeled `_claim_player`
+is flagged even though the function node itself is unchanged.
+
+**Coverage is path-dependent.** A gold trace only guards a code path it actually
+executes. A conditional security gate (`if game.is_private: <check>`) is invisible
+to a trace that never drives that branch — a public-game claim trace cannot catch
+a regression in the private-game gate. Curate the manifest so some entry exercises
+each guarded branch; a single happy-path trace is not enough for a conditional
+guard.
 
 ## Layout
 
@@ -56,6 +76,7 @@ project and is committed there.
 ```
 <skill>/assets/
   manage.mjs                          engine (config-driven, zero-install Node)
+  manage.test.mjs                     engine tests (node --test, no deps)
   config.template.yaml                machine config template
   appmap_golden_set.template.yaml     manifest template
   gitignore.template                  ignores derived artifacts
@@ -148,23 +169,27 @@ only if the release touched no traceable application code.**
    `gold_traces/reports/latest-compare.{json,md}`. Compare **never** writes the
    baseline. Add `--include-optional` to also compare the optional set.
 
-3. **Classify the diff — separate noise from real change.** The engine already
-   excludes `elapsedBucket`-only (timing) deltas from `changed`/`flagged`, so an
-   entry with `changed: true` has a **structural or SQL** delta. Review each:
+3. **Classify the diff — separate noise from real change.** Volatile data is not
+   in the digest, so an entry with `changed: true` has a **structural or SQL**
+   delta — never timing or unstable-value jitter. Each changed entry carries a
+   compact `text_diff` and a `findings` list; review each:
    ```sh
-   node -e 'const r=require("./gold_traces/reports/latest-compare.json");for(const e of r.entries){if(!e.changed)continue;console.log(e.test_name+": "+JSON.stringify(e.diff.changes.filter(c=>!(c.type==="action_changed"&&c.field==="elapsedBucket")).slice(0,5)))}'
+   node -e 'const r=require("./gold_traces/reports/latest-compare.json");for(const e of r.entries){if(!e.changed)continue;console.log("\n"+e.test_name);for(const f of e.findings)console.log("  ["+f.severity+"] "+f.category)}'
    ```
-   For every changed entry, confirm the delta maps to intended work in this
-   release. **Stop and ask the user** on any newly-raised exception, a removed
-   auth/guard call, an `sql-query-removed` (a dropped WHERE/JOIN predicate or a
-   guard query that no longer runs — a possible access-control regression), an
-   unexpected `sql-write-added`, an `sql-n-plus-one`, or drift you can't explain
-   (the report also raises `security-review` findings for auth-adjacent changes).
-   A trace that drifts every run with **no** code change is nondeterministic —
-   fix the trace (seed it), don't bless the noise.
+   (Or just read `gold_traces/reports/latest-compare.md` — each changed entry
+   shows its findings and the text diff.) For every changed entry, confirm the
+   delta maps to intended work in this release. **Stop and ask the user** on any
+   `security-review` finding, a newly-raised exception, an `sql-query-removed` (a
+   dropped WHERE/JOIN predicate or a guard query that no longer runs — a possible
+   access-control regression), an unexpected `sql-write-added`, an
+   `sql-query-changed`, an `sql-n-plus-one`, or drift you can't explain. A trace
+   that drifts every run with **no** code change is nondeterministic — fix the
+   trace (seed it), don't bless the noise.
 
 4. **Bless only meaningful change** (avoid Git churn):
-   - **Only timing noise:** leave the baseline alone — compare never touched it.
+   - **Nothing changed:** leave the baseline alone — compare never touched it.
+     (Timing and unstable-value jitter never mark an entry changed, so there is
+     no timing-noise case to discard.)
    - **Real, intended structural drift:** bless just the traces that changed,
      reusing the recordings from step 2 (do **not** pass `--record` again — that
      re-records and re-introduces noise):
@@ -197,7 +222,8 @@ exits non-zero when any trace changed.
 | `appmap_dir` | AppMap output dir, relative to `cwd`. Recordings read from `<cwd>/<appmap_dir>/<appmap_path>`. Match the project's `appmap.yml`. |
 | `commands.record` | Shell template to record ONE test. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
-| `commands.appmap_cli` | AppMap CLI for sequence-diagram export; may include a prefix like `npx @appland/appmap`. Default `appmap`. |
+| `commands.appmap_cli` | AppMap CLI for sequence-diagram export **and diff**; may include a prefix like `npx @appland/appmap`. Default `appmap`. Must emit per-action `labels` in `sequence-diagram --format json` (used for security severity). |
+| `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes; use only to break a security-critical package into per-function swimlanes. |
 
 `gold_traces/appmap_golden_set.yaml` — the curated list. `core` (canonical
 baseline) and `optional` (promote into `core` when a release changes that

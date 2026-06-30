@@ -33,10 +33,10 @@ The model is **curate → record → bless**, with the diff-and-review delegated
    truth: deliberately blessed, diffable per-trace, small (KBs). Everything derived
    (sequence diagrams, archives, the review) is produced on demand and not committed.
 3. To decide what to bless on a release, re-record the gold tests and confirm each
-   changed trace maps to intended work (see **Maintain**). The engine's `compare`
-   reports *which* traces changed; for the full interpreted review, use
-   **appmap-review**. Bless the intended changes by copying the fresh recordings over
-   the baseline; leave the rest byte-identical.
+   changed trace maps to intended work (see **Maintain**). The engine's
+   `update --dry-run` reports *which* traces changed; for the full interpreted review,
+   use **appmap-review**. Bless the intended changes (the engine copies the fresh
+   recordings over the changed baselines and leaves the rest byte-identical).
 
 Three properties keep the baseline trustworthy — they are this skill's real job:
 
@@ -73,7 +73,6 @@ project and is committed there.
   config.yaml                         commands + paths (machine config)
   appmap_golden_set.yaml              the curated list (core + optional)
   baseline/appmaps/**.appmap.json     committed baselines
-  reports/latest-compare.{json,md}    committed canonical report
   .tmp/                               derived, gitignored
 ```
 
@@ -93,7 +92,7 @@ When `gold_traces/` does not yet exist:
 
 1. **Create the directory** and seed it from the templates:
    ```sh
-   mkdir -p gold_traces/baseline/appmaps gold_traces/reports
+   mkdir -p gold_traces/baseline/appmaps
    cp "<skill>/assets/config.template.yaml"             gold_traces/config.yaml
    cp "<skill>/assets/appmap_golden_set.template.yaml"  gold_traces/appmap_golden_set.yaml
    cp "<skill>/assets/gitignore.template"               gold_traces/.gitignore
@@ -108,18 +107,19 @@ When `gold_traces/` does not yet exist:
 
 3. **Curate the manifest.** Replace the template entry with real `core` entries.
    Prefer real integration paths over validation-only branches, distinct
-   subsystems over duplicates, and **deterministic** traces (seed any RNG).
-   Mark `feature: auth` on auth/identity entries so changes there are always
-   flagged for security review.
+   subsystems over duplicates, and **deterministic** traces (seed any RNG). Use
+   `feature` to group entries by subsystem. Make sure the security-relevant
+   functions those traces exercise are **labeled** (see **appmap-label**) so
+   appmap-review can interpret changes there.
 
 4. **Seed the baseline.** Record each entry and copy the recording into the
-   baseline (the compare errors without a baseline to diff against):
+   baseline:
    ```sh
    node "<skill>/assets/manage.mjs" update --dir gold_traces --record
    ```
-   `update --record` re-records every manifest entry and copies the results into
-   `baseline/appmaps/`. (To seed only specific entries, add `--only <test_name>`,
-   repeatable.)
+   `update --record` re-records every manifest entry and seeds `baseline/appmaps/`
+   (every entry is new on the first run, so all are seeded). To seed only specific
+   entries, add `--only <test_name>`, repeatable.
 
 5. **Mark baselines binary** so Git doesn't produce noisy line diffs. Add to the
    repo-root `.gitattributes`:
@@ -146,31 +146,30 @@ if the release touched no traceable application code.**
    Review traceable change since then (`git log <that-commit>..HEAD --oneline -- <app source>`)
    and **enhance the manifest** for new/changed subsystems: add a `core` entry for a
    newly-critical path, or promote an `optional` entry into `core` when this release
-   materially changed it. Seed a baseline for any newly-added entry
-   (`update --only <test> --record`) or compare will error on it.
+   materially changed it. `update` seeds a baseline for any newly-added entry
+   automatically (`update --only <test> --record`).
 
-2. **Re-record and see what changed:**
+2. **Re-record and see what changed** — a dry run re-records and reports which traces
+   drifted, writing nothing:
    ```sh
-   node "<skill>/assets/manage.mjs" compare --dir gold_traces --record
+   node "<skill>/assets/manage.mjs" update --dir gold_traces --record --dry-run
    ```
-   This re-records every `core` entry and reports which traces changed (structural /
-   SQL facts; volatile jitter is excluded, so a `changed` entry is real). It **never**
-   writes the baseline. Add `--include-optional` to also compare the optional set. For
-   a full interpreted review of the change, run **appmap-review**.
+   It marks each trace `bless` (behavior changed), `seed` (new entry), or counts it
+   `unchanged`. The digest excludes timing/value jitter, so a `bless` is a real change.
+   Add `--include-optional` for the optional set. For a full **interpreted** review of
+   what changed and whether it's safe, run **appmap-review**.
 
 3. **Confirm intent, then bless.** Check each changed trace maps to intended work in
    this release. **Stop and ask the user** on anything that looks like a regression (a
    dropped guard, a newly-raised or now-swallowed exception, a security-relevant change
    you can't tie to intended work) or drift you can't explain. A trace that drifts with
    **no** code change is nondeterministic — fix the trace (seed it), don't bless the
-   noise. Then bless just the traces that changed, reusing the recordings from step 2
-   (do **not** pass `--record` again):
+   noise. Then bless — drop `--dry-run` (and don't re-pass `--record`, reuse step 2's
+   recordings); `update` re-blesses every changed trace and leaves the rest
+   byte-identical, or scope it with `--only`:
    ```sh
-   node "<skill>/assets/manage.mjs" update --dir gold_traces --only <changed_test> [--only <another>]
+   node "<skill>/assets/manage.mjs" update --dir gold_traces [--only <changed_test>]
    ```
-   Blessing per-entry keeps untouched baselines byte-identical. The one case where
-   re-blessing the whole set at once is correct is an `exclude` change that legitimately
-   shrinks every baseline (see **Keeping traces lean**).
 
 4. **Commit**, staging only what genuinely changed (manifest edits, newly-blessed
    baselines):
@@ -178,9 +177,6 @@ if the release touched no traceable application code.**
    git add gold_traces <touched source files>
    git commit -m "chore(gold-traces): refresh baseline for <version>"
    ```
-
-To gate CI or a release script, add `--fail-on-changes` to the compare — it exits
-non-zero when any trace changed.
 
 ## Config reference
 
@@ -192,7 +188,7 @@ non-zero when any trace changed.
 | `appmap_dir` | AppMap output dir, relative to `cwd`. Recordings read from `<cwd>/<appmap_dir>/<appmap_path>`. Match the project's `appmap.yml`. |
 | `commands.record` | Shell template to record ONE test. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
-| `commands.appmap_cli` | AppMap CLI for sequence-diagram export **and diff**; may include a prefix like `npx @appland/appmap`. Default `appmap`. Must emit per-action `labels` in `sequence-diagram --format json` (so appmap-review can interpret labeled changes). |
+| `commands.appmap_cli` | AppMap CLI used to export the sequence diagram that yields the bless-gating digest; may include a prefix like `npx @appland/appmap`. Default `appmap`. |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes; use only to break a security-critical package into per-function swimlanes. |
 
 `gold_traces/appmap_golden_set.yaml` — the curated list. `core` (canonical
@@ -240,15 +236,17 @@ with no code change, fix the test before blessing it.
 
 ## Engine commands
 
+The engine has a single command — `update` (record + digest-gated bless). Diffing
+and reviewing a change is the **appmap-review** skill's job.
+
 ```
-update   [--dir DIR] [--include-optional] [--only TEST] [--record]
-compare  [--dir DIR] [--include-optional] [--only TEST] [--record] [--fail-on-changes] [--output-json FILE] [--output-markdown FILE]
+update  [--dir DIR] [--include-optional] [--only TEST] [--record] [--dry-run]
 ```
 
-- `update` copies current AppMaps into the baseline (bless). With `--record` it
-  re-records first.
-- `compare` diffs current AppMaps against the baseline and writes the report.
-  Never writes the baseline.
+- Re-blesses each baseline whose behavior changed (copies the fresh recording over
+  it) and **seeds** a baseline for any manifest entry that lacks one. A trace whose
+  behavioral digest matches its baseline is left **byte-identical** — no git churn.
+- `--record` re-records each selected test first (needs `commands.record`).
+- `--dry-run` reports what would be blessed/seeded without writing.
 - `--only TEST` (repeatable) limits the run to named entries.
 - `--include-optional` adds the `optional` set.
-- `--fail-on-changes` makes compare exit non-zero on any change (CI gate).

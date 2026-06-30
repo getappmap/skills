@@ -1,4 +1,3 @@
-# Derived gold-trace artifacts, regenerated at compare time. The committed
-# artifacts are baseline/appmaps/** (the baseline) and reports/latest-compare.*
-# (the canonical report).
+# Derived gold-trace artifacts, regenerated each run. The only committed data is
+# baseline/appmaps/** (the blessed baselines).
 .tmp/

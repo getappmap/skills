@@ -1,3 +1,0 @@
-# Derived gold-trace artifacts, regenerated each run. The only committed data is
-# baseline/appmaps/** (the blessed baselines).
-.tmp/

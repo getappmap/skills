@@ -43,12 +43,14 @@ async function main() {
     configPath: path.join(goldDir, 'config.yaml'),
     manifestPath: path.join(goldDir, 'appmap_golden_set.yaml'),
     baselineRoot: path.join(goldDir, 'baseline'),
-    tempRoot: path.join(goldDir, '.tmp'),
   };
 
   const config = await loadConfig(paths.configPath);
   const workingDir = path.resolve(projectRoot, config.cwd);
-  const env = { ...paths, config, workingDir };
+  // Derived sequence exports go under AppMap's `.appmap/` working dir (regenerable,
+  // gitignored — the same place the CLI writes archives/work), namespaced to this skill.
+  const tempRoot = path.join(workingDir, '.appmap', 'gold-traces');
+  const env = { ...paths, config, workingDir, tempRoot };
 
   const manifest = await loadManifest(paths.manifestPath);
   let entries = selectEntries(manifest, options.includeOptional);

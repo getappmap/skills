@@ -15,12 +15,11 @@ history, compares them, and writes the interpreted review.
 
 - **Bootstrap** a gold-traces baseline in a project that doesn't have one.
 - **Maintain** the baseline during a release: enhance the manifest for new
-  subsystems, re-record, confirm the change is intended, and bless it.
+  features and subsystems, re-record, review (e.g. with the **appmap-review** skill), and bless it.
 - Keep traces lean and deterministic so the comparison stays trustworthy.
 
 This is the *baseline-maintenance* layer over AppMap. To make recordings, see
-**appmap-record**; to scope/label what gets recorded, see **appmap-label**; to query
-recordings, see **appmap-analyze**; to **review** a change, see **appmap-review**.
+**appmap-record**; to scope/label what gets recorded, see **appmap-label**; to **review** a change, see **appmap-review**.
 
 ## How it works
 
@@ -32,11 +31,11 @@ The model is **curate → record → bless**, with the diff-and-review delegated
 2. The raw baseline AppMaps are committed under `baseline/appmaps/` — the source of
    truth: deliberately blessed, diffable per-trace, small (KBs). Everything derived
    (sequence diagrams, archives, the review) is produced on demand and not committed.
-3. To decide what to bless on a release, re-record the gold tests and confirm each
-   changed trace maps to intended work (see **Maintain**). The engine's
-   `update --dry-run` reports *which* traces changed; for the full interpreted review,
-   use **appmap-review**. Bless the intended changes (the engine copies the fresh
-   recordings over the changed baselines and leaves the rest byte-identical).
+3. To decide what to bless on a release, re-record the gold tests and **review the
+   change with appmap-review** (whether a change is intended, a regression, or a side
+   effect is its job). The engine's `update --dry-run` reports *which* traces changed;
+   bless the ones the review confirms (the engine copies the fresh recordings over the
+   changed baselines and leaves the rest byte-identical).
 
 Three properties keep the baseline trustworthy — they are this skill's real job:
 
@@ -67,13 +66,12 @@ project and is committed there.
   manage.test.mjs                     engine tests (node --test, no deps)
   config.template.yaml                machine config template
   appmap_golden_set.template.yaml     manifest template
-  gitignore.template                  ignores derived artifacts
 
 <project>/gold_traces/                 created at bootstrap, committed in the project
   config.yaml                         commands + paths (machine config)
   appmap_golden_set.yaml              the curated list (core + optional)
   baseline/appmaps/**.appmap.json     committed baselines
-  .tmp/                               derived, gitignored
+<project>/.appmap/gold-traces/         derived sequence exports (regenerated, gitignored)
 ```
 
 The engine has no npm dependencies — it runs straight from Node (uses a bundled
@@ -95,8 +93,10 @@ When `gold_traces/` does not yet exist:
    mkdir -p gold_traces/baseline/appmaps
    cp "<skill>/assets/config.template.yaml"             gold_traces/config.yaml
    cp "<skill>/assets/appmap_golden_set.template.yaml"  gold_traces/appmap_golden_set.yaml
-   cp "<skill>/assets/gitignore.template"               gold_traces/.gitignore
    ```
+   The engine's derived work lands in `.appmap/gold-traces` (AppMap's regenerable
+   working dir). Ensure `.appmap/` is gitignored — most AppMap projects already ignore
+   it; add `.appmap/` to the repo `.gitignore` if not.
 
 2. **Fill in `config.yaml`.** Get the project's record command and paths from
    the project's `CLAUDE.md` first; if they aren't documented there, **ask the
@@ -159,16 +159,16 @@ if the release touched no traceable application code.**
    Add `--include-optional` for the optional set. For a full **interpreted** review of
    what changed and whether it's safe, run **appmap-review**.
 
-3. **Confirm intent, then bless.** Check each changed trace maps to intended work in
-   this release. **Stop and ask the user** on anything that looks like a regression (a
-   dropped guard, a newly-raised or now-swallowed exception, a security-relevant change
-   you can't tie to intended work) or drift you can't explain. A trace that drifts with
-   **no** code change is nondeterministic — fix the trace (seed it), don't bless the
-   noise. Then bless — drop `--dry-run` (and don't re-pass `--record`, reuse step 2's
-   recordings); `update` re-blesses every changed trace and leaves the rest
+3. **Review, then bless what's intended.** Deciding whether a changed trace is
+   intended — or a regression, or an unintended side effect — is **appmap-review**'s
+   job, not this skill's. The only call
+   that belongs here is **trace hygiene**: a trace that drifts with **no** code change
+   is nondeterministic — fix the trace (seed it), don't bless the noise. Then bless the
+   traces the review confirmed: drop `--dry-run` (and don't re-pass `--record` — reuse
+   step 2's recordings); `update` re-blesses every changed trace and leaves the rest
    byte-identical, or scope it with `--only`:
    ```sh
-   node "<skill>/assets/manage.mjs" update --dir gold_traces [--only <changed_test>]
+   node "<skill>/assets/manage.mjs" update --dir gold_traces [--only <reviewed_test>]
    ```
 
 4. **Commit**, staging only what genuinely changed (manifest edits, newly-blessed

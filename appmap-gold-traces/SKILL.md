@@ -26,7 +26,7 @@ This is the *baseline-maintenance* layer over AppMap. To make recordings, see
 The model is **curate → record → bless**, with the diff-and-review delegated to
 **appmap-review**:
 
-1. A manifest (`appmap_golden_set.yaml`) names a curated set of tests and the
+1. A manifest (`gold_traces/manifest.yaml`) names a curated set of tests and the
    recordings they produce.
 2. The raw baseline AppMaps are committed under `baseline/appmaps/` — the source of
    truth: deliberately blessed, diffable per-trace, small (KBs). Everything derived
@@ -55,6 +55,63 @@ config — e.g. SQL capture on, labels applied. If the config changes, re-record
 whole set; otherwise a later review is swamped by instrumentation drift instead of
 behavior.
 
+## What makes a trace suitable
+
+A good gold trace is the **smallest deterministic recording that exercises one
+release-critical subsystem once**. Curate for *distinct* coverage: prefer one
+representative trace per subsystem over many near-identical ones.
+
+**Reuse an existing test before synthesizing one.** A repo usually already has a
+test that drives the subsystem end-to-end — point the manifest at that. Before
+adding an entry, search the suite for coverage of the command/handler you want to
+guard; a manifest of existing tests stays in sync with the code as those tests
+evolve, whereas synthesized invocations rot on their own. This is especially true
+for a CLI: record the command's **handler test**, not the built binary driven as a
+process. A process recording of the whole binary drags in boot-time work — arg
+parsing, config loading, env probing for optional integrations — which is noise at
+best and *nondeterministic across machines* at worst (e.g. filesystem probes for an
+IDE that exists on your box but not on CI). The handler test enters at the command
+logic and captures just that. Synthesize a fresh test only when no existing one
+covers the path — and then it's a normal test the suite should keep anyway.
+
+Rule a candidate **out** before adding it to the manifest:
+
+- **It records nothing.** Some tests assert over in-memory data without driving the
+  instrumented call graph (e.g. a validator fed a literal object, a pure-function unit
+  test). If `update --record` produces no AppMap at the entry's `appmap_path`, the test
+  is not a gold-trace candidate — its behavior isn't being captured. Confirm an entry
+  actually records before committing it.
+- **Its size is repetition, not structure.** A loop- or large-fixture-driven test can
+  balloon to MBs because the *same* helper frames repeat per iteration. The exported
+  sequence diagram (what the digest is computed from) collapses those repeats, so the
+  extra megabytes add **zero** digest signal — they're pure git weight. Distinguish the
+  two size modes before reacting: many big *parameter values* → trim them (values are
+  not behavioral; see *Keeping traces lean*); many *repeated events* → pick a smaller
+  fixture, or keep just one dedicated loop trace (and no more).
+- **It is nondeterministic.** Unseeded RNG, wall-clock branching, or run-to-run ordering
+  drift makes the trace bless on every compare and trains you to ignore real changes.
+  See *Determinism*. Verify a fresh candidate is stable (`update --record --dry-run`
+  twice → `unchanged`) before trusting it.
+- **It duplicates coverage.** Several traces walking the same path don't strengthen the
+  baseline; they multiply the review and bless cost. Keep one.
+
+Two practical notes from real baselines:
+
+- **Values are not behavior — and the engine trims them.** A recording's captured
+  parameter/return `value` strings can dominate its byte size but never feed the digest
+  (which carries only `stableProperties`). So on bless the engine runs **`appmap trim`**
+  on the committed baseline to drop those value strings — shrinking it by often more than
+  half while leaving the digest, and therefore every future comparison, byte-identical.
+  This is automatic; projects don't wire trimming into their record command.
+- **Sharing a recording basename is legal but worth knowing.** AppMaps are identified by
+  their full path under `appmap_dir`, so two entries in different directories whose files
+  share a basename (distinct `describe` blocks both ending in `is_recorded`) are perfectly
+  distinct recordings. The catch is downstream: the CLI's `sequence-diagram` export names
+  its output after the AppMap's *basename only*, so two such entries would otherwise write
+  the same `<basename>.sequence.json`. The engine isolates each entry's export in its own
+  subdirectory keyed by the full `appmap_path` to prevent that aliasing — but distinct
+  names still keep the manifest and derived exports easier to read.
+
 ## Layout
 
 The engine and templates ship with this skill; the *data* lives in the target
@@ -64,12 +121,10 @@ project and is committed there.
 <skill>/assets/
   manage.mjs                          engine (config-driven, zero-install Node)
   manage.test.mjs                     engine tests (node --test, no deps)
-  config.template.yaml                machine config template
-  appmap_golden_set.template.yaml     manifest template
+  manifest.template.yaml              manifest template (commands + entries)
 
 <project>/gold_traces/                 created at bootstrap, committed in the project
-  config.yaml                         commands + paths (machine config)
-  appmap_golden_set.yaml              the curated list (core + optional)
+  manifest.yaml                       the manifest: record commands + the curated entries
   baseline/appmaps/**.appmap.json     committed baselines
 <project>/.appmap/gold-traces/         derived sequence exports (regenerated, gitignored)
 ```
@@ -84,28 +139,60 @@ node "<skill>/assets/manage.mjs" <command> --dir gold_traces [options]
 (`<skill>` is this skill's directory — substitute its absolute path. `--dir`
 defaults to `gold_traces`.)
 
+**Monorepos.** Two separable decisions — don't conflate them:
+
+*Where the baseline lives.* A `gold_traces/` per package (`packages/<name>/gold_traces/`)
+keeps traces versioned and reviewed alongside the code they guard, and lets packages be
+recorded and blessed independently (each `--dir` is its own baseline). A single repo-root
+`gold_traces/` is fine too when the repo is effectively one project. This is an ownership
+choice, not a technical one.
+
+*How recording is configured.* The recording is defined by the AppMap project —
+`appmap.yml` + its `appmap_dir` — which is usually **one config at the repo root** even
+when baselines are split per package. You don't configure paths: the engine runs the
+record/appmap commands from the **gold_traces parent directory** and reads recordings
+from wherever the **nearest-ancestor `appmap.yml`** collects them (its directory + its
+`appmap_dir`). So for `packages/<name>/gold_traces`, commands run in `packages/<name>`
+and recordings come from the root `appmap.yml`'s `appmap_dir` — both derived:
+
+```sh
+node "<skill>/assets/manage.mjs" update --dir packages/<name>/gold_traces --record
+```
+
+Make sure the package is listed in that root `appmap.yml` so its code is instrumented.
+Note the consequence: a shared multi-package `appmap.yml` **co-instruments sibling
+packages that appear in the call path** — so a trace can legitimately capture a callee in
+another package (richer cross-package behavior), but the baseline then couples to that
+package, and appmap-node names code objects relative to the *common ancestor* of all
+instrumented packages, so a trace's package root shifts (`src` → `<pkg>`/`<sibling>`)
+depending on which siblings it touches. If you want a trace isolated to one package's
+code, give that package its own scoped `appmap.yml` (`path: <pkg>/src`) instead — at the
+cost of not seeing across the boundary. Either is valid; just record the whole set with
+**one** of them (see *Record consistently*).
+
 ## Bootstrap (first time in a project)
 
 When `gold_traces/` does not yet exist:
 
-1. **Create the directory** and seed it from the templates:
+1. **Create the directory** and seed it from the template:
    ```sh
    mkdir -p gold_traces/baseline/appmaps
-   cp "<skill>/assets/config.template.yaml"             gold_traces/config.yaml
-   cp "<skill>/assets/appmap_golden_set.template.yaml"  gold_traces/appmap_golden_set.yaml
+   cp "<skill>/assets/manifest.template.yaml"  gold_traces/manifest.yaml
    ```
    The engine's derived work lands in `.appmap/gold-traces` (AppMap's regenerable
    working dir). Ensure `.appmap/` is gitignored — most AppMap projects already ignore
    it; add `.appmap/` to the repo `.gitignore` if not.
 
-2. **Fill in `config.yaml`.** Get the project's record command and paths from
-   the project's `CLAUDE.md` first; if they aren't documented there, **ask the
-   user** (the record invocation, the test working directory, the AppMap output
-   dir, any env flag the recorder needs). Write them into `config.yaml` — after
-   this, the config is the source of truth and you never re-ask. See
-   **Config reference** below.
+2. **Fill in the `commands`.** Determine the project's record command yourself by
+   inspecting the project. Check its `CLAUDE.md` first; if it isn't documented there,
+   figure it out from the project — the test runner and how it's invoked (`package.json`
+   scripts, `Makefile`, `pytest.ini`/`tox.ini`, `Gemfile`/`Rakefile`, CI workflows),
+   the AppMap recorder integration for that stack, and any env flag the recorder needs
+   (e.g. `APPMAP=true`). Write it into `manifest.yaml`'s `commands` block —
+   after this it's the source of truth and you never re-derive it. Paths are derived,
+   not configured (see **Config reference**).
 
-3. **Curate the manifest.** Replace the template entry with real `core` entries.
+3. **Curate the entries.** Replace the template entry with real `entries`.
    Prefer real integration paths over validation-only branches, distinct
    subsystems over duplicates, and **deterministic** traces (seed any RNG). Use
    `feature` to group entries by subsystem. Make sure the security-relevant
@@ -144,10 +231,9 @@ if the release touched no traceable application code.**
    git log -1 --format=%h -- gold_traces/baseline/appmaps/
    ```
    Review traceable change since then (`git log <that-commit>..HEAD --oneline -- <app source>`)
-   and **enhance the manifest** for new/changed subsystems: add a `core` entry for a
-   newly-critical path, or promote an `optional` entry into `core` when this release
-   materially changed it. `update` seeds a baseline for any newly-added entry
-   automatically (`update --only <test> --record`).
+   and **enhance the entries** for new/changed subsystems: add an entry for a
+   newly-critical path this release introduced or materially changed. `update` seeds a
+   baseline for any newly-added entry automatically (`update --only <test> --record`).
 
 2. **Re-record and see what changed** — a dry run re-records and reports which traces
    drifted, writing nothing:
@@ -156,8 +242,8 @@ if the release touched no traceable application code.**
    ```
    It marks each trace `bless` (behavior changed), `seed` (new entry), or counts it
    `unchanged`. The digest excludes timing/value jitter, so a `bless` is a real change.
-   Add `--include-optional` for the optional set. For a full **interpreted** review of
-   what changed and whether it's safe, run **appmap-review**.
+   For a full **interpreted** review of what changed and whether it's safe, run
+   **appmap-review**.
 
 3. **Review, then bless what's intended.** Deciding whether a changed trace is
    intended — or a regression, or an unintended side effect — is **appmap-review**'s
@@ -180,21 +266,21 @@ if the release touched no traceable application code.**
 
 ## Config reference
 
-`gold_traces/config.yaml` — machine config (commands and paths):
+`gold_traces/manifest.yaml` — one file: recording `commands` + the curated
+`entries`. Paths are **not** configured — they are derived.
 
 | Field | Meaning |
 |---|---|
-| `cwd` | Working dir for record/appmap commands, relative to project root (`.` = repo root). |
-| `appmap_dir` | AppMap output dir, relative to `cwd`. Recordings read from `<cwd>/<appmap_dir>/<appmap_path>`. Match the project's `appmap.yml`. |
-| `commands.record` | Shell template to record ONE test. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
+| `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
 | `commands.appmap_cli` | AppMap CLI used to export the sequence diagram that yields the bless-gating digest; may include a prefix like `npx @appland/appmap`. Default `appmap`. |
-| `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes; use only to break a security-critical package into per-function swimlanes. |
+| `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
+| `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path`, `summary`. |
 
-`gold_traces/appmap_golden_set.yaml` — the curated list. `core` (canonical
-baseline) and `optional` (promote into `core` when a release changes that
-subsystem). Each entry: `feature`, `test_file`, `test_name`, `appmap_path`, and
-a `summary` (core) or `trigger` (optional).
+Paths are **derived**: commands run from the gold_traces parent directory, and
+recordings are read from the nearest-ancestor `appmap.yml` (its directory + its
+`appmap_dir`). Place `gold_traces/` inside the directory you want commands to run from,
+within an AppMap project.
 
 The YAML is read by a small bundled parser: block maps/lists only, no flow
 collections/anchors/inline `#` comments. Quote any value containing a
@@ -220,7 +306,7 @@ Two levers, preferred order:
    still appear in the trace. Never exclude a package whose call structure the
    gold set exists to guard. See **appmap-label** for `exclude`/`packages` syntax
    across languages. Changing `exclude` shrinks *every* affected baseline — the
-   one case where re-blessing the whole core set at once is correct (confirm each
+   one case where re-blessing the whole set at once is correct (confirm each
    diff is only the leaf removal, then bless all).
 2. **Prefer a minimal fixture** for a new entry — build the minimal object graph
    the behavior needs (tens of events) instead of a heavyweight end-to-end setup.
@@ -240,13 +326,12 @@ The engine has a single command — `update` (record + digest-gated bless). Diff
 and reviewing a change is the **appmap-review** skill's job.
 
 ```
-update  [--dir DIR] [--include-optional] [--only TEST] [--record] [--dry-run]
+update  [--dir DIR] [--only TEST] [--record] [--dry-run]
 ```
 
 - Re-blesses each baseline whose behavior changed (copies the fresh recording over
-  it) and **seeds** a baseline for any manifest entry that lacks one. A trace whose
-  behavioral digest matches its baseline is left **byte-identical** — no git churn.
+  it) and **seeds** a baseline for any entry that lacks one. A trace whose behavioral
+  digest matches its baseline is left **byte-identical** — no git churn.
 - `--record` re-records each selected test first (needs `commands.record`).
 - `--dry-run` reports what would be blessed/seeded without writing.
 - `--only TEST` (repeatable) limits the run to named entries.
-- `--include-optional` adds the `optional` set.

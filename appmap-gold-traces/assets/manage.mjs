@@ -2,9 +2,9 @@
 
 // Gold-traces maintenance for the appmap-gold-traces skill.
 //
-// Config-driven and dependency-free: project-specific commands and paths live in
-// <dir>/config.yaml; the curated recording list lives in <dir>/appmap_golden_set.yaml.
-// Run from the target project root:
+// Config-driven and dependency-free: one file, <dir>/manifest.yaml, describes the whole
+// gold set — the record commands and the curated recording list. Run from the target
+// project root:
 //
 //   node <skill>/assets/manage.mjs update --dir gold_traces --record
 //   node <skill>/assets/manage.mjs update --dir gold_traces --only test_foo --dry-run
@@ -24,6 +24,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -40,20 +41,24 @@ async function main() {
   const paths = {
     projectRoot,
     goldDir,
-    configPath: path.join(goldDir, 'config.yaml'),
-    manifestPath: path.join(goldDir, 'appmap_golden_set.yaml'),
+    manifestPath: path.join(goldDir, 'manifest.yaml'),
     baselineRoot: path.join(goldDir, 'baseline'),
   };
 
-  const config = await loadConfig(paths.configPath);
-  const workingDir = path.resolve(projectRoot, config.cwd);
-  // Derived sequence exports go under AppMap's `.appmap/` working dir (regenerable,
-  // gitignored — the same place the CLI writes archives/work), namespaced to this skill.
-  const tempRoot = path.join(workingDir, '.appmap', 'gold-traces');
-  const env = { ...paths, config, workingDir, tempRoot };
+  const config = await loadManifest(paths.manifestPath);
+  // Neither the working dir nor the recordings dir is configured — both are derived
+  // from the layout. The record/appmap commands run from the gold_traces parent dir;
+  // the recordings live where the nearest-ancestor appmap.yml says (its dir + its
+  // appmap_dir field — which is also the AppMap project root for the CLI).
+  const workingDir = path.dirname(goldDir);
+  const { appmapYmlDir, appmapDir } = await locateAppmap(goldDir);
+  const appmapsDir = path.join(appmapYmlDir, appmapDir);
+  // Derived sequence exports go under that project's `.appmap/` (regenerable,
+  // gitignored — the same place the CLI writes archives/work), namespaced here.
+  const tempRoot = path.join(appmapYmlDir, '.appmap', 'gold-traces');
+  const env = { ...paths, config, workingDir, appmapYmlDir, appmapsDir, tempRoot };
 
-  const manifest = await loadManifest(paths.manifestPath);
-  let entries = selectEntries(manifest, options.includeOptional);
+  let entries = config.entries;
   if (options.only.length > 0) {
     const wanted = new Set(options.only);
     entries = entries.filter((entry) => wanted.has(entry.test_name));
@@ -78,7 +83,6 @@ function parseArgs(args) {
   const options = {
     help: false,
     dir: 'gold_traces',
-    includeOptional: false,
     record: false,
     dryRun: false,
     only: [],
@@ -99,10 +103,6 @@ function parseArgs(args) {
     if (arg === '--dir') {
       index += 1;
       options.dir = args[index] ?? 'gold_traces';
-      continue;
-    }
-    if (arg === '--include-optional') {
-      options.includeOptional = true;
       continue;
     }
     if (arg === '--record') {
@@ -128,74 +128,52 @@ function parseArgs(args) {
 
 function printHelp() {
   console.log(`Usage:
-  node <skill>/assets/manage.mjs update [--dir DIR] [--include-optional] [--only TEST] [--record] [--dry-run]
+  node <skill>/assets/manage.mjs update [--dir DIR] [--only TEST] [--record] [--dry-run]
 
 Maintains the committed gold-trace baselines. Diffing/reviewing a change is the
 appmap-review skill's job, not this engine's.
 
   update   Re-bless baselines, but only the traces whose behavior changed
            (digest-gated, so untouched baselines stay byte-identical). Seeds a
-           baseline for any manifest entry that doesn't have one yet.
+           baseline for any entry that doesn't have one yet.
 
 Options:
   --dir DIR           Managed gold-traces directory, relative to the project root (default: gold_traces).
-  --include-optional  Include manifest entries from the optional list.
   --only TEST         Limit to the named test (repeatable).
-  --record            Re-record each selected test first (needs commands.record in config).
+  --record            Re-record each selected test first (needs commands.record in the manifest).
   --dry-run           Report what would be blessed/seeded without writing anything.
   --help              Show this help.
 `);
 }
 
 // ---------------------------------------------------------------------------
-// Config + manifest
+// Spec (one file: recording commands + the curated entry list)
 // ---------------------------------------------------------------------------
 
-async function loadConfig(configPath) {
-  const raw = await readFileOrNull(configPath);
+async function loadManifest(manifestPath) {
+  const raw = await readFileOrNull(manifestPath);
   if (raw === null) {
-    throw new Error(`Missing config: ${configPath}\nBootstrap the gold-traces directory first (see the appmap-gold-traces skill).`);
+    throw new Error(`Missing gold-traces manifest: ${manifestPath}\nBootstrap the gold-traces directory first (see the appmap-gold-traces skill).`);
   }
-  const config = parseYaml(raw);
-  if (!config || typeof config !== 'object') {
-    throw new Error(`Invalid config: ${configPath}`);
+  const manifest = parseYaml(raw);
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error(`Invalid gold-traces manifest: ${manifestPath}`);
   }
-  if (!config.appmap_dir) {
-    throw new Error(`Config is missing required field 'appmap_dir': ${configPath}`);
+  const commands = manifest.commands ?? {};
+  const entries = manifest.entries ?? [];
+  if (!Array.isArray(entries)) {
+    throw new Error(`'entries' must be a list: ${manifestPath}`);
   }
-  const commands = config.commands ?? {};
   return {
-    cwd: config.cwd ?? '.',
-    appmap_dir: config.appmap_dir,
     record: commands.record ?? null,
     record_env: stringifyEnv(commands.record_env ?? {}),
     appmap_cli: commands.appmap_cli ?? 'appmap',
     // Optional per-run expand list: package code-object ids rendered at function
     // granularity in the diagram. Default empty — package granularity is enough
     // for the digest (every recorded function is still a node).
-    expand: Array.isArray(config.expand) ? config.expand.map(String) : [],
+    expand: Array.isArray(manifest.expand) ? manifest.expand.map(String) : [],
+    entries,
   };
-}
-
-async function loadManifest(manifestPath) {
-  const raw = await readFileOrNull(manifestPath);
-  if (raw === null) {
-    throw new Error(`Missing manifest: ${manifestPath}\nBootstrap the gold-traces directory first (see the appmap-gold-traces skill).`);
-  }
-  const manifest = parseYaml(raw);
-  if (!manifest || typeof manifest !== 'object') {
-    throw new Error(`Invalid manifest: ${manifestPath}`);
-  }
-  manifest.core = manifest.core ?? [];
-  manifest.optional = manifest.optional ?? [];
-  if (!Array.isArray(manifest.core) || !Array.isArray(manifest.optional)) {
-    throw new Error(`Manifest 'core' and 'optional' must be lists: ${manifestPath}`);
-  }
-  return manifest;
-}
-
-function selectEntries(manifest, includeOptional) {
-  return includeOptional ? [...manifest.core, ...manifest.optional] : [...manifest.core];
 }
 
 function stringifyEnv(envObject) {
@@ -204,6 +182,28 @@ function stringifyEnv(envObject) {
     out[key] = String(value);
   }
   return out;
+}
+
+// Find the nearest-ancestor appmap.yml of the gold-traces dir. Its directory is the
+// AppMap project root (passed to the CLI as --directory) and its `appmap_dir` says
+// where recordings land — so neither needs to be configured. Read `appmap_dir` with a
+// top-level line scan rather than the minimal YAML parser, since a real appmap.yml has
+// `packages:`/`exclude:` structure the parser isn't meant for.
+async function locateAppmap(startDir) {
+  let dir = startDir;
+  for (;;) {
+    const raw = await readFileOrNull(path.join(dir, 'appmap.yml'));
+    if (raw !== null) {
+      const match = raw.split(/\r?\n/).map((line) => /^appmap_dir:\s*(.+?)\s*$/.exec(line)).find(Boolean);
+      const appmapDir = match ? match[1].replace(/^["']|["']$/g, '') : 'tmp/appmap';
+      return { appmapYmlDir: dir, appmapDir };
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      throw new Error(`No appmap.yml found in any ancestor of ${startDir}. The gold-traces dir must live inside an AppMap project.`);
+    }
+    dir = parent;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +234,7 @@ async function updateBaseline(env, entries, options) {
       if (!options.dryRun) {
         await ensureDir(path.dirname(baselineAppMap));
         await fs.copyFile(freshAppMap, baselineAppMap);
+        trimBaseline(env, baselineAppMap);
       }
       seeded += 1;
       console.log(`  seed   ${entry.test_name}`);
@@ -250,6 +251,7 @@ async function updateBaseline(env, entries, options) {
 
     if (!options.dryRun) {
       await fs.copyFile(freshAppMap, baselineAppMap);
+      trimBaseline(env, baselineAppMap);
     }
     blessed += 1;
     console.log(`  bless  ${entry.test_name}`);
@@ -261,7 +263,7 @@ async function updateBaseline(env, entries, options) {
 
 async function rerecordEntries(env, entries) {
   if (!env.config.record) {
-    throw new Error(`--record requires 'commands.record' in ${env.configPath}`);
+    throw new Error(`--record requires 'commands.record' in ${env.manifestPath}`);
   }
   for (const entry of entries) {
     const appmapOutput = currentAppMapPath(env, entry);
@@ -287,11 +289,28 @@ function cliInvocation(env) {
   return { bin, prefix };
 }
 
+// Trim captured value strings out of a committed baseline (via `appmap trim`)
+// so the baseline stays lean. Values are excluded from the bless digest, so
+// trimming never changes what a later review compares — it only removes bytes.
+// Done here, in the engine, so projects don't have to wire trimming into their
+// record command.
+function trimBaseline(env, baselineFile) {
+  const { bin, prefix } = cliInvocation(env);
+  runCommandQuiet(bin, [...prefix, 'trim', baselineFile], { cwd: env.workingDir });
+}
+
 async function exportSequenceDiagram(env, appmapFile, outputDir, entry) {
+  // Export into a clean per-entry subdir. The CLI names its output after the
+  // appmap file's basename, so two manifest entries with the same basename
+  // (e.g. distinct describe blocks both ending in `is_recorded`) would collide
+  // in a shared dir, and files left from a prior run would defeat the
+  // new-file detection below. A dedicated, emptied dir per entry avoids both.
+  outputDir = path.join(outputDir, entry.appmap_path.replace(/[^\w.-]+/g, '_'));
+  await fs.rm(outputDir, { recursive: true, force: true });
   await ensureDir(outputDir);
   const before = new Set(await listJsonFiles(outputDir));
   const { bin, prefix } = cliInvocation(env);
-  const args = [...prefix, 'sequence-diagram', appmapFile, '--directory', env.workingDir, '--format', 'json', '--output-dir', outputDir];
+  const args = [...prefix, 'sequence-diagram', appmapFile, '--directory', env.appmapYmlDir, '--format', 'json', '--output-dir', outputDir];
   for (const id of env.config.expand) {
     args.push('--expand', id);
   }
@@ -324,7 +343,7 @@ function diagramDigest(diagram) {
 // ---------------------------------------------------------------------------
 
 function currentAppMapPath(env, entry) {
-  return path.join(env.workingDir, env.config.appmap_dir, entry.appmap_path);
+  return path.join(env.appmapsDir, entry.appmap_path);
 }
 
 function baselineAppMapPath(env, entry) {
@@ -411,7 +430,7 @@ function runShell(command, options) {
 // ---------------------------------------------------------------------------
 //
 // Dependency-free so the skill is zero-install. Handles the constrained schema
-// used by config.yaml and appmap_golden_set.yaml: block maps, block sequences
+// used by manifest.yaml: block maps, block sequences
 // of maps, one level of nested maps, and scalar values (strings, numbers,
 // booleans, null). Not a general YAML parser — no flow collections, anchors,
 // multi-line scalars, or inline comments. Put no `#` comments on the same line
@@ -508,9 +527,27 @@ function parseScalar(raw) {
 
 export { parseYaml, diagramDigest };
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
+// Resolve symlinks on argv[1]: import.meta.url is always realpath-resolved, but
+// the invoked path may be a symlink (this skill is commonly symlinked into a
+// project's .claude/skills/), which would otherwise make this guard false and
+// silently skip main().
+function invokedAsScript() {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  }
+}
+
+if (invokedAsScript()) {
+  // Top-level await (not a floating main().catch()) so a rejection's diagnostic
+  // is flushed before exit. process.exit() truncated buffered stdout/stderr,
+  // which made failed runs look silent with a 0 status.
+  try {
+    await main();
+  } catch (error) {
     console.error(error.message);
-    process.exit(1);
-  });
+    process.exitCode = 1;
+  }
 }

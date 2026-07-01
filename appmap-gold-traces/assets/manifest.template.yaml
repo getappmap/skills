@@ -1,0 +1,62 @@
+# Gold-traces manifest — gold_traces/manifest.yaml (managed by the appmap-gold-traces skill).
+#
+# One file describes the whole gold set for this project (or package): HOW to
+# record (commands) and WHAT to record (entries). Paths are NOT configured —
+# they are derived from the layout: the record/appmap commands run from this
+# file's parent directory, and recordings are read from where the nearest-ancestor
+# appmap.yml puts them (its directory + its appmap_dir). So place gold_traces
+# inside the directory you want commands to run from, within an AppMap project.
+#
+# YAML notes: read by a minimal parser. Block maps/lists only (no flow collections
+# or anchors). No `#` comments on the same line as a value. Quote any value that
+# contains a colon-followed-by-space.
+
+schema_version: 1
+
+commands:
+  # Command template that (re-)records ONE golden test, run via the shell from
+  # this file's parent directory when --record is passed. Placeholders per entry:
+  #   {test_file}   the entry's test_file
+  #   {test_name}   the entry's test_name
+  #   {appmap_path} the entry's appmap_path
+  # Pick the line for your stack and delete the rest (these are examples):
+  #
+  #   pytest (appmap-python):
+  #     record: ".venv/bin/appmap-python pytest {test_file}::{test_name} -q"
+  #   minitest / Ruby (appmap-ruby):
+  #     record: "bundle exec ruby -Itest {test_file} -n {test_name}"
+  #   rspec (appmap-ruby):
+  #     record: "APPMAP=true bundle exec rspec {test_file} -e {test_name}"
+  #   jest (appmap-node):
+  #     record: "npx appmap-node npx jest {test_file} -t {test_name}"
+  record: ".venv/bin/appmap-python pytest {test_file}::{test_name} -q"
+
+  # Extra environment variables for the record command (optional).
+  record_env:
+    APPMAP_DISPLAY_PARAMS: "true"
+
+  # The AppMap CLI used to export the sequence diagram whose digest gates the bless.
+  # May include a runner prefix, e.g. "npx @appland/appmap". Defaults to "appmap".
+  appmap_cli: appmap
+
+# Optional. Package code-object ids to render at function granularity (--expand).
+# Default empty — package granularity is enough for the digest. Example:
+# expand:
+#   - "package:my_pkg/submodule"
+
+# The curated recordings that form the behavior baseline. Each entry:
+#   feature      functional area name (used to group entries)
+#   test_file    the test that produces the recording (as the record command
+#                needs it — relative to this file's parent dir, where it runs)
+#   test_name    the test function/case name
+#   appmap_path  recording path relative to the project's appmap_dir (from appmap.yml)
+#   summary      short human context for what the trace demonstrates
+#
+# Curation: prefer one deterministic, lean recording per release-critical subsystem
+# over many near-identical ones. Reuse an existing test before synthesizing one.
+entries:
+  - feature: auth
+    test_file: tests/test_auth.py
+    test_name: test_login_verifies_token_and_mints_session
+    appmap_path: pytest/test_login_verifies_token_and_mints_session.appmap.json
+    summary: Full auth happy path from token verification through session minting.

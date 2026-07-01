@@ -63,7 +63,7 @@ The pipeline turns two revisions into one interpreted review:
 
 Gold traces are committed AppMaps, by convention under
 `gold_traces/baseline/appmaps/**/*.appmap.json`, alongside a manifest
-`gold_traces/appmap_golden_set.yaml`. Find them in each revision from git history
+`gold_traces/manifest.yaml`. Find them in each revision from git history
 (don't assume the working tree):
 
 ```sh
@@ -323,7 +323,13 @@ Prose on new/changed endpoints: auth gate, read vs. mutation, input handling.
 
 ## Summary
 
-| Severity | Count | Action required |
+Tally the findings from **Suggestions** and **Unintended Side Effects** by severity —
+the report's risk profile at a glance. One row per severity that has findings; the
+*Action required* cell is the headline action for that level. (Suggested Labels and
+Tests to Synthesize are follow-ups recorded in their own sections, so they don't
+appear here.)
+
+| Severity | Findings | Action required |
 | --- | --- | --- |
 | 🔴 High | … | … |
 | 🟡 Medium | … | … |

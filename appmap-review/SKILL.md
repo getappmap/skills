@@ -205,129 +205,52 @@ Steps 5–6 are the headline findings; steps 1–4 are the scaffolding around th
 
 ## Report format
 
-Aim for **scannable**: emoji severity markers, tables with ✅/❌ status, and
-`file:line` links a reviewer can click. Use this structure (outer fence is `~~~` so
-the nested code block can use normal ```` ``` ````):
+The report is **findings-first**: the reader lands on the verdict and the actionable
+findings; the evidence that backs them is one click away. The recipe above is
+unchanged — this section is how its output is *rendered*. Four principles govern it:
+
+- **Plain language.** The report is read by people who haven't read the diff and
+  don't know this skill's internals. No invented shorthand ("static residue",
+  "footprint minus intent", "parser reach") and no recipe jargon — say what happened
+  in ordinary words ("behavior changed in code this PR didn't touch"). Every finding
+  and ledger note must make sense on its own, without reading the recipe, the other
+  sections, or the code. Prefer a short concrete sentence over a compressed technical
+  phrase; expand product terms on first use ("the digest — the fingerprint used to
+  decide whether behavior changed").
+
+- **Single home.** Every fact is stated exactly once. A finding lives in **Findings**
+  and nowhere else — ledger and coverage rows *reference* it by number (`→ #2`). A
+  cross-cutting caveat (first-ever baseline, partial trace set) is stated once in the
+  banner and never restated. Test recommendations live inside the finding they fix or
+  the coverage gap that motivates them — there is no separate tests section. A
+  concerning Step-5 side effect **is** a finding (`type: side-effect`); an acceptable
+  one is a line in the drift narrative.
+- **Tiered rendering.** 🔴/🟡 findings get the full block (file, evidence, risk, fix).
+  🟢 findings get one bullet each. A purely intended change that was considered and
+  cleared is not a finding at all — it is the ✅ *Intended changes verified* row in
+  the ledger.
+- **Clean is a row, not a section.** A pass that found nothing (compare, side-effects,
+  absence, SQL, HTTP) earns exactly one ledger row with a one-line note. Prose exists
+  only where there are findings to explain.
+
+Prose budgets: Feature List entries are strictly one line; **Risk** and **Fix** are
+≤ 2 sentences each; code blocks only where the reader should copy-paste. Step 1's
+intended-scope notes are working input to Step 5 — don't render them.
+
+Keep the scannable idiom: emoji severity markers, ✅/❌ tables, clickable `file:line`
+links. Structure (outer fence is `~~~` so nested code blocks can use normal
+```` ``` ````; GitHub renders `<details>` folded in PR comments and job summaries, so
+the detail stays accessible without being paid for on every read):
 
 ~~~markdown
 # AppMap Behavioral Review — <feature/release>
 
-**Revisions:** `<head>` vs `<baseline>`
-**Date:** <YYYY-MM-DD>
-**Commits reviewed:**
+**Revisions:** `<head>` vs `<baseline>` · **Date:** <YYYY-MM-DD> ·
+**Commits:** `<sha>` <short subject> · … (group out-of-scope commits in one parenthetical)
 
-- `<sha>` <subject>
-
----
-
-## Feature List
-
-Numbered, one line each, **bold lead-in** naming the feature, then what it does.
-(Read from the source diff — this orients the reader before the findings.)
-
----
-
-## Coverage Matrix
-
-| Feature | Covered by | Status |
-| --- | --- | --- |
-| <feature> | `test_name` | ✅ |
-| **<security-relevant feature>** | **no test** | ❌ **uncovered** |
-| <client-only/untraced> | — | — |
-
-(✅ a gold/unit trace exercises it; ❌ a behavior that *should* be guarded isn't —
-especially a security path with no negative test; — out of trace scope.)
-
----
-
-## Suggested Labels
-
-Functions that changed but carry no label — label them (via appmap-label) so the
-next review can interpret them:
-
-- **`<label>`** — [file:line](path) `<fn>` — why.
-
----
-
-## Behavioral Drift
-
-Short prose: what `compare` showed — the **intended** drift (which traces changed as
-the feature predicts), which subsystems are untouched, which traces are new. State
-plainly that timing/value jitter is excluded by construction, so a `changed` entry is
-real.
-
----
-
-## Unintended Side Effects
-
-Behavior that changed **outside the stated scope** — the residue of footprint minus
-intent. This is the section a diff review can't produce.
-
-| Changed trace | Out-of-scope change | In the diff? | Assessment |
-| --- | --- | --- | --- |
-| `test_x` | `Foo.bar` gained a query | no — `Foo` not in the diff | 🟡 concerning — confirm |
-| `test_y` | `games` SELECT gained a column | no (schema propagation) | 🟢 acceptable — blast radius |
-
-If empty, say so: "No behavior changed outside the change's stated scope." Concerning
-rows also appear as 🟡/🔴 findings below.
-
----
-
-## Suggestions
-
-Ordered by severity, each headed with an emoji + level:
-
-### 🔴 HIGH — <one-line title>
-
-**File:** [path](path) **Context:** `<fn>` at line N
-
-Prose: the trace evidence (which `test_name`, which changed node + label) AND what it
-means in this codebase — reason from label + structure + source diff.
-
-**Risk:** who/what is exposed and how reachable it is.
-
-**Recommended remediation:** the concrete fix (offer options if design-dependent),
-then the regression test to add — as a real code block, e.g.:
-
-```python
-def test_cannot_<bypass>(...):
-    ...
-    assert not result.success
-```
-
-### 🟡 MEDIUM — <title>
-### 🟢 LOW — <title>
-
-(A purely intended change still gets a 🟢/INFO entry so the reader sees it was
-considered, not missed.)
-
----
-
-## Tests to Synthesize
-
-| Target | Test name | Priority |
-| --- | --- | --- |
-
----
-
-## SQL Pass
-
-Prose on new/changed queries: index use, predicate shape, N+1, injection surface.
-Cite the query shapes from the SQL diff.
-
-## HTTP Pass
-
-Prose on new/changed endpoints: auth gate, read vs. mutation, input handling.
-
----
+> ⚠️ <Cross-cutting caveat, only if any — stated once here, referenced elsewhere.>
 
 ## Summary
-
-Tally the findings from **Suggestions** and **Unintended Side Effects** by severity —
-the report's risk profile at a glance. One row per severity that has findings; the
-*Action required* cell is the headline action for that level. (Suggested Labels and
-Tests to Synthesize are follow-ups recorded in their own sections, so they don't
-appear here.)
 
 | Severity | Findings | Action required |
 | --- | --- | --- |
@@ -335,7 +258,77 @@ appear here.)
 | 🟡 Medium | … | … |
 | 🟢 Low | … | … |
 
-One closing paragraph: is it merge-blocking, and the single most important action.
+One or two sentences: merge-blocking or not, and the single most important action.
+
+## Findings
+
+Numbered across all severities, ordered by severity.
+
+### 1 · 🔴 HIGH — <one-line title>
+
+**File:** [path:line](path) · **Context:** `<fn>` · **Evidence:** <trace name +
+changed node + label — or "source diff only" when no trace covers it>
+
+One short paragraph: what the evidence shows and what it means in this codebase —
+reason from label + structure + source diff.
+
+**Risk:** who/what is exposed and how reachable it is (≤ 2 sentences).
+**Fix:** the concrete change, then the regression test to add (≤ 2 sentences +
+copy-paste block if warranted):
+
+```python
+def test_cannot_<bypass>(...):
+    ...
+```
+
+### 🟢 Low
+
+- **4** · <title> — [file:line](path) — one-sentence action.
+
+## Checks performed
+
+The audit trail: every pass the review ran, one row each.
+
+| Check | Result | Note |
+| --- | --- | --- |
+| Behavioral compare | ✅ clean · ⚠️ changes → #n · — not run | <one line, e.g. "timing noise is filtered out, so every reported change is real"> |
+| Changes outside the PR's scope (Step 5) | ✅ none · ⚠️ → #n | <one line> |
+| Missing guards (Step 6) | ✅ · 🔴 → #n | <one line> |
+| Test/recording coverage (Step 2) | ✅ · ❌ n gaps (detail ↓) | <one line> |
+| SQL (Step 4b) | ✅ clean · ⚠️ → #n | <one line> |
+| HTTP (Step 4c) | ✅ clean · ⚠️ → #n | <one line> |
+| Intended changes verified | ✅ | <one line — the cleared features, with their evidence> |
+
+<details>
+<summary><b>Review detail</b> — features, coverage, labels, drift</summary>
+
+### Feature List
+
+Numbered, one line each: **bold lead-in** naming the feature, then what it does.
+
+### Coverage Matrix
+
+| Feature | Covered by | Status |
+| --- | --- | --- |
+| <feature> | `test_name` | ✅ |
+| **<security-relevant feature>** | **no test** | ❌ **uncovered** → #n |
+| <client-only/untraced> | — | — |
+
+(✅ a gold/unit trace exercises it; ❌ a behavior that *should* be guarded isn't —
+especially a security path with no negative test; — out of trace scope.) One code
+block with the record command(s) that close the ❌ gaps.
+
+### Suggested Labels
+
+- **`<label>`** — [file:line](path) `<fn>` — why.
+
+### Behavioral Drift
+
+Short prose: the **intended** drift (which traces changed as the feature predicts),
+which subsystems held still, which traces are new — plus any acceptable Step-5
+side effects (mechanical propagation, confirmed blast radius).
+
+</details>
 ~~~
 
 ## Rules for the interpretation
@@ -364,5 +357,6 @@ One closing paragraph: is it merge-blocking, and the single most important actio
   conditional guard. Flag the missing negative trace.
 - **Cite evidence for every finding** (trace name + changed node + label + `file:line`),
   so the report is auditable against the compare output and the diff.
-- **A clean compare is a valid report:** state that no behavioral drift was found
-  (timing/value jitter excluded by construction), rather than omitting the report.
+- **A clean compare is a valid report:** render it as ✅ rows in the checks ledger
+  (noting that timing/value jitter is excluded by construction), rather than omitting
+  the report — the ledger is what proves the checks ran.

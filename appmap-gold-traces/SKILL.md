@@ -274,7 +274,7 @@ if the release touched no traceable application code.**
 |---|---|
 | `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
-| `commands.appmap_cli` | AppMap CLI the engine runs — it exports the bless-gating sequence diagram **and** trims value strings from each blessed baseline. The `trim` command requires **`@appland/appmap` ≥ 3.200.0**; may include a prefix like `npx @appland/appmap`. Default `appmap`. |
+| `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** trims value strings from each blessed baseline (`trim` needs **`@appland/appmap` ≥ 3.200.0**). Optional: left unset it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. Set it only to override, e.g. a prefix like `npx @appland/appmap`. |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
 | `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path`, `summary`. |
 

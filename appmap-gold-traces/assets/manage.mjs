@@ -24,7 +24,8 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { realpathSync, accessSync, constants as fsConstants } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -167,7 +168,7 @@ async function loadManifest(manifestPath) {
   return {
     record: commands.record ?? null,
     record_env: stringifyEnv(commands.record_env ?? {}),
-    appmap_cli: commands.appmap_cli ?? 'appmap',
+    appmap_cli: commands.appmap_cli ?? defaultAppmapCli(),
     // Optional per-run expand list: package code-object ids rendered at function
     // granularity in the diagram. Default empty — package granularity is enough
     // for the digest (every recorded function is still a node).
@@ -283,6 +284,20 @@ async function rerecordEntries(env, entries) {
 // ---------------------------------------------------------------------------
 // AppMap CLI surface + digest
 // ---------------------------------------------------------------------------
+
+// Resolve the AppMap CLI to use when `commands.appmap_cli` is not configured.
+// The IDE extensions install the binary to ~/.appmap/bin/appmap, so prefer that
+// when present; otherwise fall back to `appmap` on PATH (the usual CI setup).
+// Either way, no configuration is required.
+function defaultAppmapCli() {
+  const ideBin = path.join(os.homedir(), '.appmap', 'bin', 'appmap');
+  try {
+    accessSync(ideBin, fsConstants.X_OK);
+    return ideBin;
+  } catch {
+    return 'appmap';
+  }
+}
 
 function cliInvocation(env) {
   const [bin, ...prefix] = env.config.appmap_cli.split(/\s+/).filter(Boolean);

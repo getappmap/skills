@@ -36,10 +36,12 @@ commands:
     APPMAP_DISPLAY_PARAMS: "true"
 
   # The AppMap CLI the engine runs: it exports the sequence diagram whose digest
-  # gates the bless, and trims value strings out of each blessed baseline. The
-  # `trim` command requires @appland/appmap >= 3.200.0. May include a runner
-  # prefix, e.g. "npx @appland/appmap". Defaults to "appmap".
-  appmap_cli: appmap
+  # gates the bless, and trims value strings out of each blessed baseline (the
+  # `trim` command requires @appland/appmap >= 3.200.0). Leave this UNSET to
+  # auto-discover the binary — the IDE extensions' ~/.appmap/bin/appmap if present,
+  # otherwise `appmap` on PATH (the usual CI setup). Set it only to override, e.g.
+  # a runner prefix "npx @appland/appmap" or a path to a specific build.
+  # appmap_cli: appmap
 
 # Optional. Package code-object ids to render at function granularity (--expand).
 # Default empty — package granularity is enough for the digest. Example:

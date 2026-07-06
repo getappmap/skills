@@ -1,27 +1,34 @@
 #!/usr/bin/env node
 
-// Gold-traces engine for the appmap-gold-traces skill.
+// Gold-traces maintenance for the appmap-gold-traces skill.
 //
-// Config-driven and dependency-free: all project-specific commands and paths
-// live in <dir>/config.yaml; the curated recording list lives in
-// <dir>/appmap_golden_set.yaml. Run from the target project root:
+// Config-driven and dependency-free: one file, <dir>/manifest.yaml, describes the whole
+// gold set — the record commands and the curated recording list. Run from the target
+// project root:
 //
-//   node <skill>/assets/manage.mjs compare --dir gold_traces --record
-//   node <skill>/assets/manage.mjs update  --dir gold_traces --only test_foo
+//   node <skill>/assets/manage.mjs update --dir gold_traces --record
+//   node <skill>/assets/manage.mjs update --dir gold_traces --only test_foo --dry-run
 //
-// The script stores only raw baseline AppMaps and derives sequence/normalized
-// artifacts at compare time. It uses AppMap's JSON sequence-diagram export as
-// the comparison surface, then normalizes away minor volatility (actor
-// ordering, event ids, exact timings) while retaining coarse elapsed-time
-// buckets.
+// It does two things — record the gold tests, and BLESS the baselines — and nothing
+// else. Diffing and interpreting a change (regression? unintended side effect?) is the
+// appmap-review skill's job, not this engine's.
+//
+// The bless is DIGEST-GATED. Raw appmaps differ on every recording (timestamps,
+// event/object ids), so a blind copy would churn every baseline in git. Instead, for
+// each entry we export both the fresh recording and the committed baseline to AppMap's
+// JSON sequence diagram and compare a single digest over the root subtree digests —
+// which carries only AppMap `stableProperties` (normalized SQL, code-object identity,
+// exceptions) and excludes volatile data (elapsed time, ids, values). A baseline is
+// re-blessed only when that digest changed, so untouched baselines stay byte-identical.
 
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { realpathSync, accessSync, constants as fsConstants } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
-
-const securityPattern = /auth|token|session|jwt|security|identity|login|claim|verify|permission|credential|secret/i;
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
@@ -35,19 +42,24 @@ async function main() {
   const paths = {
     projectRoot,
     goldDir,
-    configPath: path.join(goldDir, 'config.yaml'),
-    manifestPath: path.join(goldDir, 'appmap_golden_set.yaml'),
+    manifestPath: path.join(goldDir, 'manifest.yaml'),
     baselineRoot: path.join(goldDir, 'baseline'),
-    reportsRoot: path.join(goldDir, 'reports'),
-    tempRoot: path.join(goldDir, '.tmp'),
   };
 
-  const config = await loadConfig(paths.configPath);
-  const workingDir = path.resolve(projectRoot, config.cwd);
-  const env = { ...paths, config, workingDir };
+  const config = await loadManifest(paths.manifestPath);
+  // Neither the working dir nor the recordings dir is configured — both are derived
+  // from the layout. The record/appmap commands run from the gold_traces parent dir;
+  // the recordings live where the nearest-ancestor appmap.yml says (its dir + its
+  // appmap_dir field — which is also the AppMap project root for the CLI).
+  const workingDir = path.dirname(goldDir);
+  const { appmapYmlDir, appmapDir } = await locateAppmap(goldDir);
+  const appmapsDir = path.join(appmapYmlDir, appmapDir);
+  // Derived sequence exports go under that project's `.appmap/` (regenerable,
+  // gitignored — the same place the CLI writes archives/work), namespaced here.
+  const tempRoot = path.join(appmapYmlDir, '.appmap', 'gold-traces');
+  const env = { ...paths, config, workingDir, appmapYmlDir, appmapsDir, tempRoot };
 
-  const manifest = await loadManifest(paths.manifestPath);
-  let entries = selectEntries(manifest, options.includeOptional);
+  let entries = config.entries;
   if (options.only.length > 0) {
     const wanted = new Set(options.only);
     entries = entries.filter((entry) => wanted.has(entry.test_name));
@@ -62,23 +74,19 @@ async function main() {
     await updateBaseline(env, entries, options);
     return;
   }
-  if (command === 'compare') {
-    await compareAgainstBaseline(env, entries, options);
-    return;
-  }
-  throw new Error(`Unknown command: ${command}`);
+  throw new Error(
+    `Unknown command: ${command}. This engine only maintains baselines ('update'). ` +
+      `To diff/review a change, use the appmap-review skill.`,
+  );
 }
 
 function parseArgs(args) {
   const options = {
     help: false,
     dir: 'gold_traces',
-    includeOptional: false,
     record: false,
-    failOnChanges: false,
+    dryRun: false,
     only: [],
-    outputJson: null,
-    outputMarkdown: null,
   };
 
   let command = null;
@@ -98,16 +106,12 @@ function parseArgs(args) {
       options.dir = args[index] ?? 'gold_traces';
       continue;
     }
-    if (arg === '--include-optional') {
-      options.includeOptional = true;
-      continue;
-    }
     if (arg === '--record') {
       options.record = true;
       continue;
     }
-    if (arg === '--fail-on-changes') {
-      options.failOnChanges = true;
+    if (arg === '--dry-run') {
+      options.dryRun = true;
       continue;
     }
     if (arg === '--only') {
@@ -115,16 +119,6 @@ function parseArgs(args) {
       if (args[index]) {
         options.only.push(args[index]);
       }
-      continue;
-    }
-    if (arg === '--output-json') {
-      index += 1;
-      options.outputJson = args[index] ?? null;
-      continue;
-    }
-    if (arg === '--output-markdown') {
-      index += 1;
-      options.outputMarkdown = args[index] ?? null;
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
@@ -135,70 +129,52 @@ function parseArgs(args) {
 
 function printHelp() {
   console.log(`Usage:
-  node <skill>/assets/manage.mjs update  [--dir DIR] [--include-optional] [--only TEST] [--record]
-  node <skill>/assets/manage.mjs compare [--dir DIR] [--include-optional] [--only TEST] [--record] [--fail-on-changes] [--output-json FILE] [--output-markdown FILE]
+  node <skill>/assets/manage.mjs update [--dir DIR] [--only TEST] [--record] [--dry-run]
 
-Commands:
-  update   Copy current AppMaps into the stored baseline (bless).
-  compare  Compare current AppMaps against the stored baseline and write a report.
+Maintains the committed gold-trace baselines. Diffing/reviewing a change is the
+appmap-review skill's job, not this engine's.
+
+  update   Re-bless baselines, but only the traces whose behavior changed
+           (digest-gated, so untouched baselines stay byte-identical). Seeds a
+           baseline for any entry that doesn't have one yet.
 
 Options:
   --dir DIR           Managed gold-traces directory, relative to the project root (default: gold_traces).
-  --include-optional  Include manifest entries from the optional list.
-  --only TEST         Limit to the named test (repeatable). Bless/compare just those entries.
-  --record            Re-record each selected test before updating or comparing (needs commands.record in config).
-  --fail-on-changes   Exit non-zero when behavioral changes are detected (compare).
-  --output-json       Override the JSON report output path for compare.
-  --output-markdown   Override the Markdown report output path for compare.
+  --only TEST         Limit to the named test (repeatable).
+  --record            Re-record each selected test first (needs commands.record in the manifest).
+  --dry-run           Report what would be blessed/seeded without writing anything.
   --help              Show this help.
 `);
 }
 
 // ---------------------------------------------------------------------------
-// Config + manifest
+// Spec (one file: recording commands + the curated entry list)
 // ---------------------------------------------------------------------------
-
-async function loadConfig(configPath) {
-  const raw = await readFileOrNull(configPath);
-  if (raw === null) {
-    throw new Error(`Missing config: ${configPath}\nBootstrap the gold-traces directory first (see the appmap-gold-traces skill).`);
-  }
-  const config = parseYaml(raw);
-  if (!config || typeof config !== 'object') {
-    throw new Error(`Invalid config: ${configPath}`);
-  }
-  if (!config.appmap_dir) {
-    throw new Error(`Config is missing required field 'appmap_dir': ${configPath}`);
-  }
-  const commands = config.commands ?? {};
-  return {
-    cwd: config.cwd ?? '.',
-    appmap_dir: config.appmap_dir,
-    record: commands.record ?? null,
-    record_env: stringifyEnv(commands.record_env ?? {}),
-    appmap_cli: commands.appmap_cli ?? 'appmap',
-  };
-}
 
 async function loadManifest(manifestPath) {
   const raw = await readFileOrNull(manifestPath);
   if (raw === null) {
-    throw new Error(`Missing manifest: ${manifestPath}\nBootstrap the gold-traces directory first (see the appmap-gold-traces skill).`);
+    throw new Error(`Missing gold-traces manifest: ${manifestPath}\nBootstrap the gold-traces directory first (see the appmap-gold-traces skill).`);
   }
   const manifest = parseYaml(raw);
   if (!manifest || typeof manifest !== 'object') {
-    throw new Error(`Invalid manifest: ${manifestPath}`);
+    throw new Error(`Invalid gold-traces manifest: ${manifestPath}`);
   }
-  manifest.core = manifest.core ?? [];
-  manifest.optional = manifest.optional ?? [];
-  if (!Array.isArray(manifest.core) || !Array.isArray(manifest.optional)) {
-    throw new Error(`Manifest 'core' and 'optional' must be lists: ${manifestPath}`);
+  const commands = manifest.commands ?? {};
+  const entries = manifest.entries ?? [];
+  if (!Array.isArray(entries)) {
+    throw new Error(`'entries' must be a list: ${manifestPath}`);
   }
-  return manifest;
-}
-
-function selectEntries(manifest, includeOptional) {
-  return includeOptional ? [...manifest.core, ...manifest.optional] : [...manifest.core];
+  return {
+    record: commands.record ?? null,
+    record_env: stringifyEnv(commands.record_env ?? {}),
+    appmap_cli: commands.appmap_cli ?? defaultAppmapCli(),
+    // Optional per-run expand list: package code-object ids rendered at function
+    // granularity in the diagram. Default empty — package granularity is enough
+    // for the digest (every recorded function is still a node).
+    expand: Array.isArray(manifest.expand) ? manifest.expand.map(String) : [],
+    entries,
+  };
 }
 
 function stringifyEnv(envObject) {
@@ -209,8 +185,30 @@ function stringifyEnv(envObject) {
   return out;
 }
 
+// Find the nearest-ancestor appmap.yml of the gold-traces dir. Its directory is the
+// AppMap project root (passed to the CLI as --directory) and its `appmap_dir` says
+// where recordings land — so neither needs to be configured. Read `appmap_dir` with a
+// top-level line scan rather than the minimal YAML parser, since a real appmap.yml has
+// `packages:`/`exclude:` structure the parser isn't meant for.
+async function locateAppmap(startDir) {
+  let dir = startDir;
+  for (;;) {
+    const raw = await readFileOrNull(path.join(dir, 'appmap.yml'));
+    if (raw !== null) {
+      const match = raw.split(/\r?\n/).map((line) => /^appmap_dir:\s*(.+?)\s*$/.exec(line)).find(Boolean);
+      const appmapDir = match ? match[1].replace(/^["']|["']$/g, '') : 'tmp/appmap';
+      return { appmapYmlDir: dir, appmapDir };
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      throw new Error(`No appmap.yml found in any ancestor of ${startDir}. The gold-traces dir must live inside an AppMap project.`);
+    }
+    dir = parent;
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Commands
+// update — record + digest-gated bless
 // ---------------------------------------------------------------------------
 
 async function updateBaseline(env, entries, options) {
@@ -218,87 +216,55 @@ async function updateBaseline(env, entries, options) {
     await rerecordEntries(env, entries);
   }
 
-  for (const entry of entries) {
-    const appmapSource = currentAppMapPath(env, entry);
-    await assertExists(appmapSource, `Missing AppMap for ${entry.test_name}`);
-    const baselineAppMap = baselineAppMapPath(env, entry);
-    await ensureDir(path.dirname(baselineAppMap));
-    await fs.copyFile(appmapSource, baselineAppMap);
-  }
+  const freshSeqDir = tempSequenceDir(env, 'update-current');
+  const baseSeqDir = tempSequenceDir(env, 'update-baseline');
+  await ensureDir(freshSeqDir);
+  await ensureDir(baseSeqDir);
 
-  console.log(`Updated baseline raw AppMaps for ${entries.length} recording(s).`);
-}
-
-async function compareAgainstBaseline(env, entries, options) {
-  if (options.record) {
-    await rerecordEntries(env, entries);
-  }
-
-  const report = {
-    generated_at: process.env.GOLD_TRACES_NOW ?? null,
-    include_optional: options.includeOptional,
-    compared: entries.length,
-    changed: 0,
-    flagged: 0,
-    entries: [],
-  };
-
-  const compareCurrentSequenceDir = tempSequenceDir(env, 'compare-current');
-  const compareBaselineSequenceDir = tempSequenceDir(env, 'compare-baseline');
-  await ensureDir(compareCurrentSequenceDir);
-  await ensureDir(compareBaselineSequenceDir);
+  let blessed = 0;
+  let seeded = 0;
+  let unchanged = 0;
 
   for (const entry of entries) {
+    const freshAppMap = currentAppMapPath(env, entry);
+    await assertExists(freshAppMap, `Missing AppMap for ${entry.test_name} (record it first)`);
     const baselineAppMap = baselineAppMapPath(env, entry);
-    const currentAppMap = currentAppMapPath(env, entry);
-    await assertExists(baselineAppMap, `Missing baseline AppMap for ${entry.test_name}`);
-    await assertExists(currentAppMap, `Missing current AppMap for ${entry.test_name}`);
 
-    const baselineSequence = await exportSequenceDiagram(env, baselineAppMap, compareBaselineSequenceDir, entry);
-    const baseline = await normalizeSequenceFile(baselineSequence);
-    const currentSequence = await exportSequenceDiagram(env, currentAppMap, compareCurrentSequenceDir, entry);
-    const current = await normalizeSequenceFile(currentSequence);
-    const diff = diffNormalizedSequences(baseline, current);
-    const flaggedFindings = buildFindings(entry, diff);
-
-    if (diff.changed) {
-      report.changed += 1;
-    }
-    if (flaggedFindings.length > 0) {
-      report.flagged += 1;
+    // No committed baseline yet: seed it (new manifest entry).
+    if ((await readFileOrNull(baselineAppMap)) === null) {
+      if (!options.dryRun) {
+        await ensureDir(path.dirname(baselineAppMap));
+        await fs.copyFile(freshAppMap, baselineAppMap);
+        trimBaseline(env, baselineAppMap);
+      }
+      seeded += 1;
+      console.log(`  seed   ${entry.test_name}`);
+      continue;
     }
 
-    report.entries.push({
-      feature: entry.feature,
-      test_file: entry.test_file,
-      test_name: entry.test_name,
-      appmap_path: entry.appmap_path,
-      changed: diff.changed,
-      summary: diff.summary,
-      findings: flaggedFindings,
-      diff,
-    });
+    // Digest-gate: only re-bless when behavior actually changed.
+    const freshDigest = diagramDigest(await readJson(await exportSequenceDiagram(env, freshAppMap, freshSeqDir, entry)));
+    const baseDigest = diagramDigest(await readJson(await exportSequenceDiagram(env, baselineAppMap, baseSeqDir, entry)));
+    if (freshDigest === baseDigest) {
+      unchanged += 1;
+      continue;
+    }
+
+    if (!options.dryRun) {
+      await fs.copyFile(freshAppMap, baselineAppMap);
+      trimBaseline(env, baselineAppMap);
+    }
+    blessed += 1;
+    console.log(`  bless  ${entry.test_name}`);
   }
 
-  const jsonPath = options.outputJson ?? path.join(env.reportsRoot, 'latest-compare.json');
-  const markdownPath = options.outputMarkdown ?? path.join(env.reportsRoot, 'latest-compare.md');
-  await ensureDir(path.dirname(jsonPath));
-  await ensureDir(path.dirname(markdownPath));
-  await fs.writeFile(jsonPath, JSON.stringify(report, null, 2) + '\n');
-  await fs.writeFile(markdownPath, renderMarkdownReport(report));
-
-  console.log(`Compared ${report.compared} recording(s). Changed: ${report.changed}. Flagged: ${report.flagged}.`);
-  console.log(`JSON report: ${path.relative(env.projectRoot, jsonPath)}`);
-  console.log(`Markdown report: ${path.relative(env.projectRoot, markdownPath)}`);
-
-  if (options.failOnChanges && report.changed > 0) {
-    process.exitCode = 1;
-  }
+  const verb = options.dryRun ? 'Would bless' : 'Blessed';
+  console.log(`${verb} ${blessed}, seeded ${seeded}, unchanged ${unchanged} (of ${entries.length}).`);
 }
 
 async function rerecordEntries(env, entries) {
   if (!env.config.record) {
-    throw new Error(`--record requires 'commands.record' in ${env.configPath}`);
+    throw new Error(`--record requires 'commands.record' in ${env.manifestPath}`);
   }
   for (const entry of entries) {
     const appmapOutput = currentAppMapPath(env, entry);
@@ -315,15 +281,63 @@ async function rerecordEntries(env, entries) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// AppMap CLI surface + digest
+// ---------------------------------------------------------------------------
+
+// Resolve the AppMap CLI to use when `commands.appmap_cli` is not configured.
+// The IDE extensions install the binary to ~/.appmap/bin/appmap, so prefer that
+// when present; otherwise fall back to `appmap` on PATH (the usual CI setup).
+// Either way, no configuration is required.
+function defaultAppmapCli() {
+  const ideBin = path.join(os.homedir(), '.appmap', 'bin', 'appmap');
+  try {
+    accessSync(ideBin, fsConstants.X_OK);
+    return ideBin;
+  } catch {
+    return 'appmap';
+  }
+}
+
+function cliInvocation(env) {
+  const [bin, ...prefix] = env.config.appmap_cli.split(/\s+/).filter(Boolean);
+  return { bin, prefix };
+}
+
+// Trim captured value strings out of a committed baseline (via `appmap trim`)
+// so the baseline stays lean. Values are excluded from the bless digest, so
+// trimming never changes what a later review compares — it only removes bytes.
+// Done here, in the engine, so projects don't have to wire trimming into their
+// record command.
+function trimBaseline(env, baselineFile) {
+  const { bin, prefix } = cliInvocation(env);
+  try {
+    runCommandQuiet(bin, [...prefix, 'trim', baselineFile], { cwd: env.workingDir });
+  } catch (err) {
+    // `trim` shipped in @appland/appmap 3.200.0; an older CLI fails here.
+    throw new Error(
+      `${err.message}\n\nThe 'trim' command requires @appland/appmap >= 3.200.0. ` +
+        `Update the CLI, or point 'commands.appmap_cli' at a released version >= 3.200.0.`
+    );
+  }
+}
+
 async function exportSequenceDiagram(env, appmapFile, outputDir, entry) {
+  // Export into a clean per-entry subdir. The CLI names its output after the
+  // appmap file's basename, so two manifest entries with the same basename
+  // (e.g. distinct describe blocks both ending in `is_recorded`) would collide
+  // in a shared dir, and files left from a prior run would defeat the
+  // new-file detection below. A dedicated, emptied dir per entry avoids both.
+  outputDir = path.join(outputDir, entry.appmap_path.replace(/[^\w.-]+/g, '_'));
+  await fs.rm(outputDir, { recursive: true, force: true });
   await ensureDir(outputDir);
   const before = new Set(await listJsonFiles(outputDir));
-  const [bin, ...prefix] = env.config.appmap_cli.split(/\s+/).filter(Boolean);
-  runCommand(
-    bin,
-    [...prefix, 'sequence-diagram', appmapFile, '--directory', env.workingDir, '--format', 'json', '--output-dir', outputDir],
-    { cwd: env.workingDir },
-  );
+  const { bin, prefix } = cliInvocation(env);
+  const args = [...prefix, 'sequence-diagram', appmapFile, '--directory', env.appmapYmlDir, '--format', 'json', '--output-dir', outputDir];
+  for (const id of env.config.expand) {
+    args.push('--expand', id);
+  }
+  runCommandQuiet(bin, args, { cwd: env.workingDir });
   const after = new Set(await listJsonFiles(outputDir));
   for (const candidate of after) {
     if (!before.has(candidate)) {
@@ -336,414 +350,15 @@ async function exportSequenceDiagram(env, appmapFile, outputDir, entry) {
   return fallback;
 }
 
-// ---------------------------------------------------------------------------
-// Normalization + diff (the comparison surface)
-// ---------------------------------------------------------------------------
-
-async function normalizeSequenceFile(sequencePath) {
-  const data = JSON.parse(await fs.readFile(sequencePath, 'utf8'));
-  return {
-    actors: (data.actors ?? [])
-      .map((actor) => ({ id: actor.id ?? null, name: actor.name ?? null }))
-      .sort((left, right) => String(left.id).localeCompare(String(right.id))),
-    rootActions: (data.rootActions ?? []).map(normalizeAction),
-  };
-}
-
-function normalizeAction(action) {
-  return {
-    nodeType: action.nodeType ?? null,
-    caller: action.caller ?? null,
-    callee: action.callee ?? null,
-    name: action.name ?? null,
-    static: Boolean(action.static),
-    elapsedBucket: bucketElapsed(action.elapsed),
-    stable: {
-      event_type: action.stableProperties?.event_type ?? null,
-      id: action.stableProperties?.id ?? null,
-      raises_exception: Boolean(action.stableProperties?.raises_exception),
-    },
-    returnValue: normalizeReturnValue(action.returnValue),
-    sql: normalizeSql(action.query),
-    children: (action.children ?? []).map(normalizeAction),
-  };
-}
-
-function bucketElapsed(elapsedSeconds) {
-  if (typeof elapsedSeconds !== 'number' || Number.isNaN(elapsedSeconds) || elapsedSeconds < 0) {
-    return null;
+// A single sha256 over the diagram's root subtree digests (mirrors @appland/cli's
+// SequenceDiagramDigest). The subtree digests carry only AppMap `stableProperties`,
+// so elapsed time, object ids, and value-level volatility are already excluded.
+function diagramDigest(diagram) {
+  const hash = createHash('sha256');
+  for (const action of diagram.rootActions ?? []) {
+    hash.update(action.subtreeDigest ?? '');
   }
-  const elapsedMs = elapsedSeconds * 1000;
-  if (elapsedMs <= 0.1) return 'le_0.1ms';
-  if (elapsedMs <= 1) return 'le_1ms';
-  if (elapsedMs <= 10) return 'le_10ms';
-  if (elapsedMs <= 100) return 'le_100ms';
-  if (elapsedMs <= 1000) return 'le_1000ms';
-  return 'gt_1000ms';
-}
-
-function normalizeReturnValue(returnValue) {
-  if (!returnValue) {
-    return null;
-  }
-  return {
-    raisesException: Boolean(returnValue.raisesException),
-    type: normalizeReturnType(returnValue.returnValueType),
-  };
-}
-
-function normalizeReturnType(typeInfo) {
-  if (!typeInfo) {
-    return null;
-  }
-  return {
-    name: typeInfo.name ?? null,
-    properties: [...(typeInfo.properties ?? [])].sort(),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// SQL fingerprinting
-//
-// The sequence diagram carries the full statement on each database action in
-// `action.query` (appmap prefixes executemany with "-- N times"). The positional
-// action diff deliberately ignores it: a benign projection change (a new SELECT
-// column) would otherwise flag every query node, and the positional walk is
-// already fragile to inserted frames. Instead we reduce each statement to a
-// structural FINGERPRINT — operation + tables + filter (WHERE/JOIN/HAVING)
-// columns — and diff the per-sequence MULTISET of fingerprints, order-independent.
-// That surfaces the regressions a reviewer cares about while staying quiet on
-// cosmetics:
-//   - a dropped WHERE/JOIN predicate, or a query that no longer runs -> removed
-//   - a new write, or a newly touched table                          -> added
-//   - the same query now run more times (N+1 / fan-out)              -> count delta
-//   - a new projected column (e.g. `abandoned_at`)         -> same fingerprint (quiet)
-// Literals, bind params, projection lists, aliases, and whitespace are stripped.
-
-const SQL_OPS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH'];
-
-function normalizeSql(query) {
-  if (typeof query !== 'string') return null;
-  let text = query;
-  // appmap collapses executemany into a "-- N times\n<stmt>" prefix.
-  let repeat = 1;
-  const repeatMatch = text.match(/^\s*--\s*(\d+|\?)\s*times\s*\r?\n/i);
-  if (repeatMatch) {
-    repeat = repeatMatch[1] === '?' ? null : Number(repeatMatch[1]);
-    text = text.slice(repeatMatch[0].length);
-  }
-  text = text.replace(/\s+/g, ' ').trim();
-  if (text === '') return null;
-  // Transaction/session noise is not a behavioral signal.
-  if (/^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SET|SHOW|PRAGMA)\b/i.test(text)) return null;
-  const op = (SQL_OPS.find((candidate) => new RegExp(`^${candidate}\\b`, 'i').test(text)) ?? 'OTHER').toUpperCase();
-  return { op, tables: extractTables(text), filters: extractFilterColumns(text), repeat };
-}
-
-function stripSqlQuotes(identifier) {
-  return identifier.replace(/["`]/g, '');
-}
-
-function extractTables(text) {
-  const tables = new Set();
-  const re = /\b(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z_][\w."]*)/gi;
-  let match;
-  while ((match = re.exec(text)) !== null) {
-    tables.add(stripSqlQuotes(match[1]).toLowerCase());
-  }
-  return [...tables].sort();
-}
-
-function extractFilterColumns(text) {
-  // Columns in WHERE/ON/HAVING predicates — the access-control- and correctness-
-  // relevant surface. Take each clause body up to the next clause boundary and
-  // pull identifiers sitting immediately left of a comparison operator. Heuristic
-  // but deterministic, which is all a fingerprint needs.
-  const cols = new Set();
-  const clauseRe = /\b(?:WHERE|ON|HAVING)\b(.*?)(?:\bGROUP BY\b|\bORDER BY\b|\bLIMIT\b|\bRETURNING\b|$)/gis;
-  let clause;
-  while ((clause = clauseRe.exec(text)) !== null) {
-    const colRe = /([A-Za-z_][\w."]*)\s*(?:=|<>|!=|<=|>=|<|>|\bIN\b|\bIS\b|\bLIKE\b|\bBETWEEN\b)/gi;
-    let column;
-    while ((column = colRe.exec(clause[1])) !== null) {
-      const ident = stripSqlQuotes(column[1]).toLowerCase();
-      if (!['and', 'or', 'not', 'null', 'true', 'false'].includes(ident)) cols.add(ident);
-    }
-  }
-  return [...cols].sort();
-}
-
-function sqlFingerprintKey(fingerprint) {
-  return `${fingerprint.op} {${fingerprint.tables.join(',')}} [${fingerprint.filters.join(',')}]`;
-}
-
-function collectSqlProfile(rootActions) {
-  const profile = new Map(); // key -> { fingerprint, count }
-  const visit = (actions) => {
-    for (const action of actions ?? []) {
-      if (action.sql) {
-        const key = sqlFingerprintKey(action.sql);
-        const entry = profile.get(key) ?? { fingerprint: action.sql, count: 0 };
-        entry.count += action.sql.repeat === null ? 1 : action.sql.repeat;
-        profile.set(key, entry);
-      }
-      visit(action.children);
-    }
-  };
-  visit(rootActions);
-  return profile;
-}
-
-function diffSqlProfiles(baseline, current, changes) {
-  const baseProfile = collectSqlProfile(baseline.rootActions ?? []);
-  const currProfile = collectSqlProfile(current.rootActions ?? []);
-  for (const [key, entry] of currProfile) {
-    if (!baseProfile.has(key)) {
-      changes.push({ type: 'sql_query_added', key, op: entry.fingerprint.op, tables: entry.fingerprint.tables, filters: entry.fingerprint.filters, count: entry.count });
-    }
-  }
-  for (const [key, entry] of baseProfile) {
-    if (!currProfile.has(key)) {
-      changes.push({ type: 'sql_query_removed', key, op: entry.fingerprint.op, tables: entry.fingerprint.tables, filters: entry.fingerprint.filters, count: entry.count });
-    }
-  }
-  for (const [key, entry] of currProfile) {
-    const baseEntry = baseProfile.get(key);
-    if (baseEntry && baseEntry.count !== entry.count) {
-      changes.push({ type: 'sql_count_changed', key, op: entry.fingerprint.op, before: baseEntry.count, after: entry.count });
-    }
-  }
-}
-
-function diffNormalizedSequences(baseline, current) {
-  const changes = [];
-
-  const baselineActors = new Set((baseline.actors ?? []).map((actor) => actor.id));
-  const currentActors = new Set((current.actors ?? []).map((actor) => actor.id));
-  for (const actor of currentActors) {
-    if (!baselineActors.has(actor)) {
-      changes.push({ type: 'actor_added', actor });
-    }
-  }
-  for (const actor of baselineActors) {
-    if (!currentActors.has(actor)) {
-      changes.push({ type: 'actor_removed', actor });
-    }
-  }
-
-  diffActionLists(baseline.rootActions ?? [], current.rootActions ?? [], 'rootActions', changes);
-  diffSqlProfiles(baseline, current, changes);
-
-  // `elapsedBucket` is wall-clock timing: it drifts across bucket boundaries between two
-  // recordings of identical code, so a timing-only delta is noise, not a behavioral change.
-  // Keep it in `changes` (a dramatic le_1ms -> gt_1000ms shift is still worth a human glance),
-  // but don't let it mark an entry changed/flagged on its own — otherwise every run flags timing
-  // jitter, and an auth trace's jitter even raises a false high security-review.
-  const isTimingOnly = (change) => change.type === 'action_changed' && change.field === 'elapsedBucket';
-  const behavioralChanges = changes.filter((change) => !isTimingOnly(change));
-
-  return {
-    changed: behavioralChanges.length > 0,
-    summary: summarizeChanges(changes),
-    changes,
-  };
-}
-
-function diffActionLists(baselineActions, currentActions, pathLabel, changes) {
-  const count = Math.max(baselineActions.length, currentActions.length);
-  for (let index = 0; index < count; index += 1) {
-    const baselineAction = baselineActions[index];
-    const currentAction = currentActions[index];
-    const currentPath = `${pathLabel}[${index}]`;
-    if (!baselineAction && currentAction) {
-      changes.push({ type: 'action_added', path: currentPath, id: currentAction.stable.id, name: currentAction.name });
-      continue;
-    }
-    if (baselineAction && !currentAction) {
-      changes.push({ type: 'action_removed', path: currentPath, id: baselineAction.stable.id, name: baselineAction.name });
-      continue;
-    }
-    diffAction(baselineAction, currentAction, currentPath, changes);
-  }
-}
-
-function diffAction(baselineAction, currentAction, currentPath, changes) {
-  const fields = [
-    ['caller', baselineAction.caller, currentAction.caller],
-    ['callee', baselineAction.callee, currentAction.callee],
-    ['name', baselineAction.name, currentAction.name],
-    ['static', baselineAction.static, currentAction.static],
-    ['elapsedBucket', baselineAction.elapsedBucket, currentAction.elapsedBucket],
-    ['stable.id', baselineAction.stable.id, currentAction.stable.id],
-    ['stable.event_type', baselineAction.stable.event_type, currentAction.stable.event_type],
-    ['stable.raises_exception', baselineAction.stable.raises_exception, currentAction.stable.raises_exception],
-    ['returnValue', JSON.stringify(baselineAction.returnValue), JSON.stringify(currentAction.returnValue)],
-  ];
-
-  for (const [field, baselineValue, currentValue] of fields) {
-    if (baselineValue !== currentValue) {
-      changes.push({
-        type: 'action_changed',
-        path: currentPath,
-        field,
-        before: baselineValue,
-        after: currentValue,
-        id: currentAction.stable.id ?? baselineAction.stable.id,
-        name: currentAction.name ?? baselineAction.name,
-      });
-    }
-  }
-
-  diffActionLists(baselineAction.children, currentAction.children, `${currentPath}.children`, changes);
-}
-
-function summarizeChanges(changes) {
-  if (changes.length === 0) {
-    return 'No structural behavior changes after normalization.';
-  }
-  const counts = new Map();
-  for (const change of changes) {
-    counts.set(change.type, (counts.get(change.type) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([type, count]) => `${count} ${type.replaceAll('_', ' ')}`)
-    .join(', ');
-}
-
-function buildFindings(entry, diff) {
-  if (!diff.changed) {
-    return [];
-  }
-
-  const findings = [];
-  const securityRelevant = entry.feature === 'auth' || diff.changes.some((change) => securityPattern.test(JSON.stringify(change)));
-  if (securityRelevant) {
-    findings.push({
-      severity: 'high',
-      category: 'security-review',
-      message: 'Behavior changed in a security-sensitive area. Review auth, token, session, identity, or permission side effects.',
-    });
-  }
-
-  const exceptionChanges = diff.changes.filter(
-    (change) => change.type === 'action_changed' && (change.field === 'stable.raises_exception' || change.field === 'returnValue'),
-  );
-  if (exceptionChanges.length > 0) {
-    findings.push({
-      severity: 'medium',
-      category: 'exception-behavior',
-      message: 'Exception or return-shape behavior changed. Check whether new failures, suppressed failures, or validation changes are intentional.',
-    });
-  }
-
-  const actorChanges = diff.changes.filter((change) => change.type === 'actor_added' || change.type === 'actor_removed');
-  if (actorChanges.length > 0) {
-    findings.push({
-      severity: 'medium',
-      category: 'side-effects',
-      message: 'The set of participating packages changed. Review for unexpected new dependencies or side effects.',
-    });
-  }
-
-  // A vanished query shape is the access-control & correctness red flag: a dropped
-  // WHERE/JOIN predicate (fog-of-war / authorization filter), or a guard read that
-  // no longer runs. High on a security-relevant path, medium otherwise.
-  const sqlRemoved = diff.changes.filter((change) => change.type === 'sql_query_removed');
-  if (sqlRemoved.length > 0) {
-    findings.push({
-      severity: securityRelevant || sqlRemoved.some((change) => change.op === 'SELECT') ? 'high' : 'medium',
-      category: 'sql-query-removed',
-      message: 'A SQL query shape disappeared from this path (a dropped WHERE/JOIN predicate, a guard query that no longer runs, or a removed read). Confirm no access-control or correctness check was lost.',
-    });
-  }
-
-  // A new write or newly-touched table is a side effect worth confirming.
-  const sqlWritesAdded = diff.changes.filter(
-    (change) => change.type === 'sql_query_added' && (change.op === 'INSERT' || change.op === 'UPDATE' || change.op === 'DELETE'),
-  );
-  if (sqlWritesAdded.length > 0) {
-    findings.push({
-      severity: 'medium',
-      category: 'sql-write-added',
-      message: 'A new INSERT/UPDATE/DELETE shape appears on this path. Confirm the new write is intended.',
-    });
-  }
-
-  // Same query shape, more executions => N+1 / fan-out (often a query inside a loop).
-  const sqlFanOut = diff.changes.filter((change) => change.type === 'sql_count_changed' && change.after > change.before);
-  if (sqlFanOut.length > 0) {
-    findings.push({
-      severity: 'medium',
-      category: 'sql-n-plus-one',
-      message: 'A SQL query shape now runs more times than the baseline (possible N+1 / fan-out). Check for a query issued inside a loop.',
-    });
-  }
-
-  if (findings.length === 0) {
-    findings.push({
-      severity: 'low',
-      category: 'behavior-change',
-      message: 'Normalized call structure changed. Review whether the trace delta matches the intended feature work.',
-    });
-  }
-
-  return findings;
-}
-
-function renderMarkdownReport(report) {
-  const lines = [];
-  lines.push('# Gold Trace Compare Report');
-  lines.push('');
-  lines.push(`Generated: ${report.generated_at ?? '(unstamped)'}`);
-  lines.push(`Compared: ${report.compared}`);
-  lines.push(`Changed: ${report.changed}`);
-  lines.push(`Flagged: ${report.flagged}`);
-  lines.push('');
-
-  for (const entry of report.entries) {
-    lines.push(`## ${entry.test_name}`);
-    lines.push('');
-    lines.push(`- Feature: ${entry.feature}`);
-    lines.push(`- Test: ${entry.test_file}::${entry.test_name}`);
-    lines.push(`- AppMap: ${entry.appmap_path}`);
-    lines.push(`- Changed: ${entry.changed ? 'yes' : 'no'}`);
-    lines.push(`- Summary: ${entry.summary}`);
-    if (entry.findings.length > 0) {
-      lines.push('- Findings:');
-      for (const finding of entry.findings) {
-        lines.push(`  - [${finding.severity}] ${finding.category}: ${finding.message}`);
-      }
-    }
-    if (entry.diff.changes.length > 0) {
-      lines.push('- Changes:');
-      for (const change of entry.diff.changes.slice(0, 20)) {
-        lines.push(`  - ${formatChange(change)}`);
-      }
-      if (entry.diff.changes.length > 20) {
-        lines.push(`  - ... ${entry.diff.changes.length - 20} more changes`);
-      }
-    }
-    lines.push('');
-  }
-
-  return lines.join('\n') + '\n';
-}
-
-function formatChange(change) {
-  if (change.type === 'actor_added' || change.type === 'actor_removed') {
-    return `${change.type.replaceAll('_', ' ')}: ${change.actor}`;
-  }
-  if (change.type === 'action_added' || change.type === 'action_removed') {
-    return `${change.type.replaceAll('_', ' ')} at ${change.path}: ${change.id ?? change.name}`;
-  }
-  if (change.type === 'sql_query_added' || change.type === 'sql_query_removed') {
-    const filters = change.filters && change.filters.length ? ` filter[${change.filters.join(',')}]` : '';
-    return `${change.type.replaceAll('_', ' ')}: ${change.op} {${change.tables.join(',')}}${filters} (x${change.count})`;
-  }
-  if (change.type === 'sql_count_changed') {
-    return `sql count changed: ${change.key} ${change.before} -> ${change.after}`;
-  }
-  return `${change.type.replaceAll('_', ' ')} at ${change.path} field ${change.field}: ${change.before} -> ${change.after}`;
+  return hash.digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +366,7 @@ function formatChange(change) {
 // ---------------------------------------------------------------------------
 
 function currentAppMapPath(env, entry) {
-  return path.join(env.workingDir, env.config.appmap_dir, entry.appmap_path);
+  return path.join(env.appmapsDir, entry.appmap_path);
 }
 
 function baselineAppMapPath(env, entry) {
@@ -782,6 +397,10 @@ async function listJsonFiles(dir) {
   }
 }
 
+async function readJson(filePath) {
+  return JSON.parse(await fs.readFile(filePath, 'utf8'));
+}
+
 async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
 }
@@ -805,13 +424,17 @@ async function assertExists(filePath, message) {
   }
 }
 
-function runCommand(command, args, options) {
-  const result = spawnSync(command, args, { stdio: 'inherit', ...options });
+// Run a command, capturing stdout/stderr. The AppMap CLI is chatty (per-export
+// "Printed diagram ..." lines, and @appland/models logs SQL it can't parse), so
+// we stay quiet on success and surface the captured output only on failure.
+function runCommandQuiet(command, args, options) {
+  const result = spawnSync(command, args, { encoding: 'utf8', ...options });
   if (result.error) {
     throw new Error(`Command failed to start: ${command} (${result.error.message})`);
   }
   if (result.status !== 0) {
-    throw new Error(`Command failed: ${command} ${args.join(' ')}`);
+    const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    throw new Error(`Command failed: ${command} ${args.join(' ')}\n${detail}`);
   }
 }
 
@@ -830,7 +453,7 @@ function runShell(command, options) {
 // ---------------------------------------------------------------------------
 //
 // Dependency-free so the skill is zero-install. Handles the constrained schema
-// used by config.yaml and appmap_golden_set.yaml: block maps, block sequences
+// used by manifest.yaml: block maps, block sequences
 // of maps, one level of nested maps, and scalar values (strings, numbers,
 // booleans, null). Not a general YAML parser — no flow collections, anchors,
 // multi-line scalars, or inline comments. Put no `#` comments on the same line
@@ -925,11 +548,29 @@ function parseScalar(raw) {
   return value;
 }
 
-export { parseYaml, normalizeSql, sqlFingerprintKey, normalizeAction, diffNormalizedSequences };
+export { parseYaml, diagramDigest };
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
+// Resolve symlinks on argv[1]: import.meta.url is always realpath-resolved, but
+// the invoked path may be a symlink (this skill is commonly symlinked into a
+// project's .claude/skills/), which would otherwise make this guard false and
+// silently skip main().
+function invokedAsScript() {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  }
+}
+
+if (invokedAsScript()) {
+  // Top-level await (not a floating main().catch()) so a rejection's diagnostic
+  // is flushed before exit. process.exit() truncated buffered stdout/stderr,
+  // which made failed runs look silent with a 0 status.
+  try {
+    await main();
+  } catch (error) {
     console.error(error.message);
-    process.exit(1);
-  });
+    process.exitCode = 1;
+  }
 }

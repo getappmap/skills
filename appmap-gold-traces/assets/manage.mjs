@@ -296,7 +296,15 @@ function cliInvocation(env) {
 // record command.
 function trimBaseline(env, baselineFile) {
   const { bin, prefix } = cliInvocation(env);
-  runCommandQuiet(bin, [...prefix, 'trim', baselineFile], { cwd: env.workingDir });
+  try {
+    runCommandQuiet(bin, [...prefix, 'trim', baselineFile], { cwd: env.workingDir });
+  } catch (err) {
+    // `trim` shipped in @appland/appmap 3.200.0; an older CLI fails here.
+    throw new Error(
+      `${err.message}\n\nThe 'trim' command requires @appland/appmap >= 3.200.0. ` +
+        `Update the CLI, or point 'commands.appmap_cli' at a released version >= 3.200.0.`
+    );
+  }
 }
 
 async function exportSequenceDiagram(env, appmapFile, outputDir, entry) {

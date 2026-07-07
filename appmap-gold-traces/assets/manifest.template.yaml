@@ -36,17 +36,27 @@ commands:
     APPMAP_DISPLAY_PARAMS: "true"
 
   # The AppMap CLI the engine runs: it exports the sequence diagram whose digest
-  # gates the bless, and trims value strings out of each blessed baseline (the
-  # `trim` command requires @appland/appmap >= 3.200.0). Leave this UNSET to
-  # auto-discover the binary — the IDE extensions' ~/.appmap/bin/appmap if present,
-  # otherwise `appmap` on PATH (the usual CI setup). Set it only to override, e.g.
-  # a runner prefix "npx @appland/appmap" or a path to a specific build.
+  # gates the bless, and sanitizes each blessed baseline (the `sanitize` command
+  # requires @appland/appmap >= 3.201.0). Leave this UNSET to auto-discover the
+  # binary — the IDE extensions' ~/.appmap/bin/appmap if present, otherwise
+  # `appmap` on PATH (the usual CI setup). Set it only to override, e.g. a
+  # runner prefix "npx @appland/appmap" or a path to a specific build.
   # appmap_cli: appmap
 
 # Optional. Package code-object ids to render at function granularity (--expand).
 # Default empty — package granularity is enough for the digest. Example:
 # expand:
 #   - "package:my_pkg/submodule"
+
+# Optional. Values `appmap sanitize` keeps VERBATIM in blessed baselines (exact
+# whole-value matches). Sanitization replaces every captured value string with
+# an equality-preserving token (<v1>, <v2>, ...); list small public vocabularies
+# here (state or role names an enum defines) when reading them verbatim helps
+# the review. Never list anything that could identify a person or authenticate
+# a request. Example:
+# allow_values:
+#   - "public"
+#   - "private"
 
 # The curated recordings that form the behavior baseline. Each entry:
 #   feature      functional area name (used to group entries)

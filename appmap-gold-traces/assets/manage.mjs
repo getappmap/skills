@@ -173,6 +173,10 @@ async function loadManifest(manifestPath) {
     // granularity in the diagram. Default empty — package granularity is enough
     // for the digest (every recorded function is still a node).
     expand: Array.isArray(manifest.expand) ? manifest.expand.map(String) : [],
+    // Optional values `appmap sanitize` keeps verbatim (exact whole-value
+    // matches): small public vocabularies such as state or role names, curated
+    // by a human in the manifest.
+    allow_values: Array.isArray(manifest.allow_values) ? manifest.allow_values.map(String) : [],
     entries,
   };
 }
@@ -235,7 +239,7 @@ async function updateBaseline(env, entries, options) {
       if (!options.dryRun) {
         await ensureDir(path.dirname(baselineAppMap));
         await fs.copyFile(freshAppMap, baselineAppMap);
-        trimBaseline(env, baselineAppMap);
+        sanitizeBaseline(env, baselineAppMap);
       }
       seeded += 1;
       console.log(`  seed   ${entry.test_name}`);
@@ -252,7 +256,7 @@ async function updateBaseline(env, entries, options) {
 
     if (!options.dryRun) {
       await fs.copyFile(freshAppMap, baselineAppMap);
-      trimBaseline(env, baselineAppMap);
+      sanitizeBaseline(env, baselineAppMap);
     }
     blessed += 1;
     console.log(`  bless  ${entry.test_name}`);
@@ -309,15 +313,24 @@ function cliInvocation(env) {
 // trimming never changes what a later review compares — it only removes bytes.
 // Done here, in the engine, so projects don't have to wire trimming into their
 // record command.
-function trimBaseline(env, baselineFile) {
+// Sanitize replaces every captured value string with a per-AppMap
+// equality-preserving token (<v1>, <v2>, ...), so the committed baseline is
+// structurally incapable of carrying a secret. The digest carries only
+// stableProperties, so sanitization never changes it — no false re-bless.
+// Values listed in the manifest's `allow_values` are kept verbatim (exact
+// whole-value matches; curate small public vocabularies only).
+function sanitizeBaseline(env, baselineFile) {
   const { bin, prefix } = cliInvocation(env);
+  const allowArgs = env.config.allow_values.flatMap((value) => ['--allow', value]);
   try {
-    runCommandQuiet(bin, [...prefix, 'trim', baselineFile], { cwd: env.workingDir });
+    runCommandQuiet(bin, [...prefix, 'sanitize', baselineFile, ...allowArgs], {
+      cwd: env.workingDir,
+    });
   } catch (err) {
-    // `trim` shipped in @appland/appmap 3.200.0; an older CLI fails here.
+    // `sanitize` shipped in @appland/appmap 3.201.0; an older CLI fails here.
     throw new Error(
-      `${err.message}\n\nThe 'trim' command requires @appland/appmap >= 3.200.0. ` +
-        `Update the CLI, or point 'commands.appmap_cli' at a released version >= 3.200.0.`
+      `${err.message}\n\nThe 'sanitize' command requires @appland/appmap >= 3.201.0. ` +
+        `Update the CLI, or point 'commands.appmap_cli' at a released version >= 3.201.0.`
     );
   }
 }

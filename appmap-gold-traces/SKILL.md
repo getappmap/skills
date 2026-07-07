@@ -85,9 +85,10 @@ Rule a candidate **out** before adding it to the manifest:
   balloon to MBs because the *same* helper frames repeat per iteration. The exported
   sequence diagram (what the digest is computed from) collapses those repeats, so the
   extra megabytes add **zero** digest signal — they're pure git weight. Distinguish the
-  two size modes before reacting: many big *parameter values* → trim them (values are
-  not behavioral; see *Keeping traces lean*); many *repeated events* → pick a smaller
-  fixture, or keep just one dedicated loop trace (and no more).
+  two size modes before reacting: many big *parameter values* → nothing to do (values
+  are not behavioral, and bless-time sanitization tokenizes them anyway); many
+  *repeated events* → pick a smaller fixture, or keep just one dedicated loop trace
+  (and no more).
 - **It is nondeterministic.** Unseeded RNG, wall-clock branching, or run-to-run ordering
   drift makes the trace bless on every compare and trains you to ignore real changes.
   See *Determinism*. Verify a fresh candidate is stable (`update --record --dry-run`
@@ -97,13 +98,19 @@ Rule a candidate **out** before adding it to the manifest:
 
 Two practical notes from real baselines:
 
-- **Values are not behavior — and the engine trims them.** A recording's captured
-  parameter/return `value` strings can dominate its byte size but never feed the digest
-  (which carries only `stableProperties`). So on bless the engine runs **`appmap trim`**
-  (released in `@appland/appmap` 3.200.0) on the committed baseline to drop those value
-  strings — shrinking it substantially while leaving the digest, and therefore every
-  future comparison, byte-identical. This is automatic; projects don't wire trimming
-  into their record command.
+- **Values are not behavior — and the engine sanitizes them.** A recording's captured
+  parameter/return `value` strings can dominate its byte size, can accidentally carry
+  secrets or personal data, and never feed the digest (which carries only
+  `stableProperties`). So on bless the engine runs **`appmap sanitize`** (released in
+  `@appland/appmap` 3.201.0) on the committed baseline: every captured value string
+  becomes a per-AppMap equality-preserving token (`<v1>`, `<v2>`, …, kind-annotated
+  like `<uuid:v3>`), SQL literals are parameterized with the statement shape kept,
+  and header names survive while their values are tokenized. The committed baseline
+  is structurally incapable of carrying a secret, equality within one trace still
+  reads as data-flow, and the digest — and therefore every future comparison — is
+  unchanged. Small public vocabularies (enum state/role names) can be kept verbatim
+  via the manifest's `allow_values`. This is automatic; projects don't wire
+  sanitization into their record command.
 - **Sharing a recording basename is legal but worth knowing.** AppMaps are identified by
   their full path under `appmap_dir`, so two entries in different directories whose files
   share a basename (distinct `describe` blocks both ending in `is_recorded`) are perfectly
@@ -274,8 +281,9 @@ if the release touched no traceable application code.**
 |---|---|
 | `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
-| `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** trims value strings from each blessed baseline (`trim` needs **`@appland/appmap` ≥ 3.200.0**). Optional: left unset it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. Set it only to override, e.g. a prefix like `npx @appland/appmap`. |
+| `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each blessed baseline (`sanitize` needs **`@appland/appmap` ≥ 3.201.0**). Optional: left unset it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. Set it only to override, e.g. a prefix like `npx @appland/appmap`. |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
+| `allow_values` *(optional)* | Values `appmap sanitize` keeps verbatim in blessed baselines — exact whole-value matches. Curate small public vocabularies only (enum state/role names); never anything that could identify a person or authenticate a request. |
 | `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path`, `summary`. |
 
 Paths are **derived**: commands run from the gold_traces parent directory, and
@@ -320,6 +328,13 @@ every compare and trains you to ignore real changes. Seed RNG in the test
 (e.g. pass an explicit `seed=` rather than calling an unseeded resolver), pin any
 time-dependent input, and stabilize collection ordering. If a fresh entry drifts
 with no code change, fix the test before blessing it.
+
+One sanitize-specific case of the same symptom: when a captured SQL statement is
+malformed (e.g. a truncated capture), `appmap sanitize` fails closed and replaces
+the whole statement with a token — but the digest of the *fresh* recording still
+carries the original statement, so that trace re-blesses on every run. Treat it as
+trace hygiene, not behavior: fix whatever mangles the SQL capture rather than
+blessing the churn.
 
 ## Engine commands
 

@@ -71,28 +71,55 @@ Gold traces are committed AppMaps, by convention under
 git ls-tree -r --name-only <rev> | grep -E 'gold_traces/.*/appmaps/.*\.appmap\.json$'
 ```
 
-Extract each revision's set into its own working directory, preserving the relative
-`appmap_dir` layout the project's `appmap.yml` expects:
-
-```sh
-mkdir -p .review/base/<appmap_dir> .review/head/<appmap_dir>
-for f in $(git ls-tree -r --name-only <baseline> | grep '/appmaps/.*\.appmap\.json$'); do
-  git show "<baseline>:$f" > ".review/base/<appmap_dir>/$(basename "$f")"
-done
-# …repeat for <head>…
-```
-
-Copy the project's `appmap.yml` (from `head`) into each working dir so `archive`
-indexes both sides identically.
+Extract each revision's set into its own working directory, reproducing the layout
+the project's `appmap.yml` expects: the recordings live under `appmap_dir`, and each
+one's path *below* `appmaps/` in the baseline is its path *below* `appmap_dir`.
+Preserve that sub-path — don't flatten to the basename, or two traces that share a
+basename in different directories collide.
 
 ## Build the archives and compare
 
+This exact sequence is verified against `@appland/appmap` ≥ 3.200.0. Run it from the
+project root (which has `appmap.yml`). `$appmap_dir` is the `appmap_dir:` value from
+`appmap.yml` (e.g. `tmp/appmap`); `$BASE`/`$HEAD` are the two revisions.
+
 ```sh
-appmap archive --directory .review/base --revision base --output-file base.tar
-appmap archive --directory .review/head --revision head --output-file head.tar
-# unpack each archive's appmaps into <out>/base and <out>/head, then:
-appmap compare --directory <out> --output-dir <out>/report \
-  --base-revision base --head-revision head
+appmap_dir=$(sed -n 's/^appmap_dir: *//p' appmap.yml)   # e.g. tmp/appmap
+rm -rf .review
+
+# 1 — Extract each revision's committed gold traces into a per-revision working dir,
+#     under $appmap_dir, preserving each trace's sub-path (no basename flattening),
+#     and copy in appmap.yml so `archive` indexes both sides identically.
+for rev in base head; do
+  ref=$([ "$rev" = base ] && echo "$BASE" || echo "$HEAD")
+  mkdir -p ".review/$rev/$appmap_dir"
+  cp appmap.yml ".review/$rev/appmap.yml"
+  for f in $(git ls-tree -r --name-only "$ref" | grep -E 'gold_traces/.*/appmaps/.*\.appmap\.json$'); do
+    rel="${f##*/appmaps/}"                                # path under $appmap_dir
+    mkdir -p ".review/$rev/$appmap_dir/$(dirname "$rel")"
+    git show "$ref:$f" > ".review/$rev/$appmap_dir/$rel"
+  done
+done
+
+# 2 — Archive each side. archive's DEFAULT output is .appmap/archive/full/<rev>.tar;
+#     do NOT pass an absolute --output-file (the internal tar mangles it). Just cd in
+#     and pass --revision. archive runs the scanner and OpenAPI automatically.
+( cd .review/base && appmap archive --revision base )
+( cd .review/head && appmap archive --revision head )
+
+# 3 — Unpack each archive into <output-dir>/base and <output-dir>/head. `compare`
+#     REQUIRES the two revisions' data to already sit there before it runs, and it
+#     loads appmap.yml from its working dir — so put one there too.
+mkdir -p .review/out/report/base .review/out/report/head
+cp appmap.yml .review/out/appmap.yml
+tar xf .review/base/.appmap/archive/full/base.tar -C .review/out/report/base
+tar xf .review/head/.appmap/archive/full/head.tar -C .review/out/report/head
+
+# 4 — Compare. base/ and head/ live UNDER --output-dir (here `report`); compare writes
+#     change-report.json and diff/ alongside them. Do NOT pass --clobber-output-dir —
+#     it would delete the base/ and head/ you just unpacked.
+( cd .review/out && appmap compare --base-revision base --head-revision head --output-dir report )
+# results: .review/out/report/change-report.json  and  .review/out/report/diff/
 ```
 
 `compare` writes `change-report.json` (the structural facts) and per-trace diff

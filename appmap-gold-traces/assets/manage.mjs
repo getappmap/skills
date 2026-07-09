@@ -308,17 +308,14 @@ function cliInvocation(env) {
   return { bin, prefix };
 }
 
-// Trim captured value strings out of a committed baseline (via `appmap trim`)
-// so the baseline stays lean. Values are excluded from the bless digest, so
-// trimming never changes what a later review compares — it only removes bytes.
-// Done here, in the engine, so projects don't have to wire trimming into their
-// record command.
-// Sanitize replaces every captured value string with a per-AppMap
-// equality-preserving token (<v1>, <v2>, ...), so the committed baseline is
-// structurally incapable of carrying a secret. The digest carries only
-// stableProperties, so sanitization never changes it — no false re-bless.
-// Values listed in the manifest's `allow_values` are kept verbatim (exact
-// whole-value matches; curate small public vocabularies only).
+// Sanitize a committed baseline (via `appmap sanitize`): every captured value
+// string is replaced with a per-AppMap equality-preserving token, so the
+// baseline is structurally incapable of carrying a secret — and much smaller.
+// Values are excluded from the bless digest, so sanitization never changes
+// what a later review compares. Values listed in the manifest's `allow_values`
+// are kept verbatim (exact whole-value matches; curate small public
+// vocabularies only). Done here, in the engine, so projects don't have to wire
+// sanitization into their record command.
 function sanitizeBaseline(env, baselineFile) {
   const { bin, prefix } = cliInvocation(env);
   const allowArgs = env.config.allow_values.flatMap((value) => ['--allow', value]);

@@ -94,7 +94,11 @@ Rule a candidate **out** before adding it to the manifest:
   See *Determinism*. Verify a fresh candidate is stable (`update --record --dry-run`
   twice → `unchanged`) before trusting it.
 - **It duplicates coverage.** Several traces walking the same path don't strengthen the
-  baseline; they multiply the review and bless cost. Keep one.
+  baseline; they multiply the review and bless cost. Keep one. In particular, don't map
+  unit tests one-to-one onto gold traces: when a subsystem needs coverage of several
+  branches (including the failure branch of a security check), write **one** test whose
+  fixture drives all of them and record that — branch coverage belongs inside the
+  fixture, not spread across manifest entries.
 
 Two practical notes from real baselines:
 

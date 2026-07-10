@@ -1,0 +1,123 @@
+{
+  "entries": [
+    {
+      "appmap": "pytest/test_claim_player_assigns_and_guards",
+      "status": "changed",
+      "labels": [
+        "security.authorization",
+        "security.join_code"
+      ],
+      "changes": [
+        {
+          "change": "added",
+          "kind": "sql",
+          "op": "SELECT",
+          "write": false,
+          "text": "SELECT games.id AS games_id, games.name AS games_name, games.time_compression AS",
+          "labels": [
+            "security.authorization",
+            "security.join_code"
+          ],
+          "under": "_claim_player"
+        },
+        {
+          "change": "added",
+          "kind": "sql",
+          "op": "SELECT",
+          "write": false,
+          "text": "SELECT games.id AS games_id, games.name AS games_name, games.time_compression AS",
+          "labels": [
+            "security.authorization",
+            "security.join_code"
+          ],
+          "under": "_claim_player"
+        }
+      ]
+    },
+    {
+      "appmap": "pytest/test_waiting_room_lifecycle",
+      "status": "changed",
+      "labels": [
+        "security.authorization",
+        "security.join_code"
+      ],
+      "changes": [
+        {
+          "change": "added",
+          "kind": "sql",
+          "op": "SELECT",
+          "write": false,
+          "text": "SELECT games.id AS games_id, games.name AS games_name, games.time_compression AS",
+          "labels": [
+            "security.authorization",
+            "security.join_code"
+          ],
+          "under": "_claim_player"
+        },
+        {
+          "change": "added",
+          "kind": "sql",
+          "op": "SELECT",
+          "write": false,
+          "text": "SELECT games.id AS games_id, games.name AS games_name, games.time_compression AS",
+          "labels": [
+            "security.authorization",
+            "security.join_code"
+          ],
+          "under": "_claim_player"
+        },
+        {
+          "change": "added",
+          "kind": "sql",
+          "op": "SELECT",
+          "write": false,
+          "text": "SELECT games.id AS games_id, games.name AS games_name, games.time_compression AS",
+          "labels": [
+            "security.authorization",
+            "security.join_code"
+          ],
+          "under": "_claim_player"
+        }
+      ]
+    },
+    {
+      "appmap": "pytest/test_member_sees_private_game_and_code_after_claiming",
+      "status": "new",
+      "labels": [
+        "security.authorization",
+        "security.join_code"
+      ],
+      "changes": []
+    }
+  ],
+  "sqlDiff": {
+    "newQueries": [
+      {
+        "query": "SELECT games.id \nFROM games \nWHERE games.join_code = %(join_code_1)s::VARCHAR AND games.join_code_created_at >= %(join_code_created_at_1)s::TIMESTAMP WITH TIME ZONE",
+        "appmaps": [
+          "pytest/test_member_sees_private_game_and_code_after_claiming"
+        ],
+        "sourceLocations": []
+      },
+      {
+        "query": "SELECT games.id, games.name, games.time_compression, games.status, games.created_by_user_id, games.duration, games.stars_per_player, games.start_time, games.end_time, games.event_counter, games.last_action_time, games.ended, games.paused, games.paused_at, games.total_paused, games.auto_resume_at, games.is_private, games.join_code, games.join_code_created_at, games.factory_cost, games.spy_probe_cost, games.death_probe_cost, games.speed_cost, games.battle_power_cost, games.range_cost, games.probe_shield_cost, games.death_shield_cost, games.gate_cost_per_k \nFROM games \nWHERE games.join_code = %(join_code_1)s::VARCHAR AND games.join_code_created_at >= %(join_code_created_at_1)s::TIMESTAMP WITH TIME ZONE AND games.status = %(status_1)s",
+        "appmaps": [
+          "pytest/test_member_sees_private_game_and_code_after_claiming"
+        ],
+        "sourceLocations": []
+      }
+    ],
+    "removedQueries": [],
+    "newTables": [],
+    "removedTables": []
+  },
+  "apiDiff": {
+    "breakingDifferencesFound": false,
+    "nonBreakingDifferences": [],
+    "unclassifiedDifferences": []
+  },
+  "findingDiff": {
+    "new": [],
+    "resolved": []
+  }
+}

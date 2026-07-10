@@ -37,10 +37,14 @@ commands:
 
   # The AppMap CLI the engine runs: it exports the sequence diagram whose digest
   # gates the bless, and sanitizes each blessed baseline (the `sanitize` command
-  # requires @appland/appmap >= 3.201.0). Leave this UNSET to auto-discover the
-  # binary — the IDE extensions' ~/.appmap/bin/appmap if present, otherwise
-  # `appmap` on PATH (the usual CI setup). Set it only to override, e.g. a
-  # runner prefix "npx @appland/appmap" or a path to a specific build.
+  # requires @appland/appmap >= 3.201.0). LEAVE THIS UNSET — the engine
+  # auto-discovers the binary: the IDE extensions' ~/.appmap/bin/appmap if
+  # present, otherwise `appmap` on PATH (the usual CI setup). A value here is
+  # machine-specific config committed to a shared file, and it breaks on other
+  # machines and platforms. Set it only when the project truly needs it:
+  #   a. the appmap CLI lives in an unusual location, or
+  #   b. the project runs a custom-compiled CLI (e.g. appmap-js itself sets
+  #      "node built/cli.js").
   # appmap_cli: appmap
 
 # Optional. Package code-object ids to render at function granularity (--expand).

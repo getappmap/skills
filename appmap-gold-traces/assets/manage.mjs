@@ -26,7 +26,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { realpathSync, accessSync, constants as fsConstants } from 'node:fs';
+import { realpathSync, accessSync, writeFileSync, constants as fsConstants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -175,6 +175,10 @@ async function loadManifest(manifestPath) {
     // granularity in the diagram. Default empty — package granularity is enough
     // for the digest (every recorded function is still a node).
     expand: Array.isArray(manifest.expand) ? manifest.expand.map(String) : [],
+    // Optional values `appmap sanitize` keeps verbatim (passed as --allow). For
+    // small public vocabularies only (enum state/role names); never anything that
+    // identifies a person or authenticates a request.
+    allow_values: Array.isArray(manifest.allow_values) ? manifest.allow_values.map(String) : [],
     entries,
   };
 }
@@ -322,8 +326,17 @@ function cliInvocation(env) {
 // projects don't have to wire sanitizing into their record command.
 function sanitizeAppMap(env, appmapFile) {
   const { bin, prefix } = cliInvocation(env);
+  // Pass any allow_values via --allow-file, not --allow: --allow is variadic and
+  // would swallow the appmap path into its array (leaving zero positional args).
+  // A file also handles values with spaces or shell-special characters cleanly.
+  const allowArgs = [];
+  if (env.config.allow_values.length > 0) {
+    const allowFile = path.join(os.tmpdir(), 'appmap-gold-traces.allow');
+    writeFileSync(allowFile, env.config.allow_values.join('\n') + '\n');
+    allowArgs.push('--allow-file', allowFile);
+  }
   try {
-    runCommandQuiet(bin, [...prefix, 'sanitize', appmapFile], { cwd: env.workingDir });
+    runCommandQuiet(bin, [...prefix, 'sanitize', ...allowArgs, appmapFile], { cwd: env.workingDir });
   } catch (err) {
     // `sanitize` shipped in @appland/appmap 3.201.0; an older CLI fails here.
     throw new Error(

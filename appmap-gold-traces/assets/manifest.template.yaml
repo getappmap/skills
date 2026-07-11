@@ -41,6 +41,13 @@ commands:
   # override, e.g. a path to a specific, custom build of the CLI.
   # appmap_cli: appmap
 
+# Optional. Values `appmap sanitize` keeps verbatim in blessed baselines (exact
+# whole-value match). Small public vocabularies only — enum state/role names, never
+# anything that could identify a person or authenticate a request. Example:
+# allow_values:
+#   - active
+#   - pending
+
 # The curated recordings that form the behavior baseline. Each entry:
 #   feature      functional area name (used to group entries)
 #   test_file    the test that produces the recording (as the record command

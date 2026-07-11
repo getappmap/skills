@@ -85,9 +85,10 @@ Rule a candidate **out** before adding it to the manifest:
   balloon to MBs because the *same* helper frames repeat per iteration. The exported
   sequence diagram (what the digest is computed from) collapses those repeats, so the
   extra megabytes add **zero** digest signal — they're pure git weight. Distinguish the
-  two size modes before reacting: many big *parameter values* → trim them (values are
-  not behavioral; see *Keeping traces lean*); many *repeated events* → pick a smaller
-  fixture, or keep just one dedicated loop trace (and no more).
+  two size modes before reacting: many big *parameter values* → the engine's `sanitize`
+  step already replaces these with short tokens, so they add little committed weight
+  (values aren't behavioral; see *Keeping traces lean*); many *repeated events* → pick a
+  smaller fixture, or keep just one dedicated loop trace (and no more).
 - **It is nondeterministic.** Unseeded RNG, wall-clock branching, or run-to-run ordering
   drift makes the trace bless on every compare and trains you to ignore real changes.
   See *Determinism*. Verify a fresh candidate is stable (`update --record --dry-run`
@@ -97,13 +98,16 @@ Rule a candidate **out** before adding it to the manifest:
 
 Two practical notes from real baselines:
 
-- **Values are not behavior — and the engine trims them.** A recording's captured
-  parameter/return `value` strings can dominate its byte size but never feed the digest
-  (which carries only `stableProperties`). So on bless the engine runs **`appmap trim`**
-  (released in `@appland/appmap` 3.200.0) on the committed baseline to drop those value
-  strings — shrinking it substantially while leaving the digest, and therefore every
-  future comparison, byte-identical. This is automatic; projects don't wire trimming
-  into their record command.
+- **Values are not behavior — and the engine strips them.** On bless the engine runs
+  **`appmap sanitize`** (needs `@appland/appmap` ≥ 3.201.0) on the fresh recording,
+  replacing every captured parameter/return/message value with a short,
+  equality-preserving token (`<v1>`, `<uuid:v3>`). So the committed baseline is
+  structurally incapable of carrying a secret, and much smaller. Sanitize is
+  deterministic and idempotent, but it *can* rewrite digest-relevant text (e.g. SQL
+  literals) — so the engine sanitizes the fresh recording **before** computing its bless
+  digest and compares that against the (also sanitized) committed baseline: an honest,
+  sanitized-vs-sanitized gate that never reports false drift. This is automatic; projects
+  don't wire sanitizing into their record command.
 - **Sharing a recording basename is legal but worth knowing.** AppMaps are identified by
   their full path under `appmap_dir`, so two entries in different directories whose files
   share a basename (distinct `describe` blocks both ending in `is_recorded`) are perfectly
@@ -274,7 +278,7 @@ if the release touched no traceable application code.**
 |---|---|
 | `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
-| `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** trims value strings from each blessed baseline (`trim` needs **`@appland/appmap` ≥ 3.200.0**). Optional: left unset it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. Set it only to override, e.g. a prefix like `npx @appland/appmap`. |
+| `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each recording before it is committed (`sanitize` needs **`@appland/appmap` ≥ 3.201.0**). Optional: left unset it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. Set it only to override, e.g. a prefix like `npx @appland/appmap`. |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
 | `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path`, `summary`. |
 

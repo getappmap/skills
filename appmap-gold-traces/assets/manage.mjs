@@ -14,11 +14,13 @@
 // appmap-review skill's job, not this engine's.
 //
 // The bless is DIGEST-GATED. Raw appmaps differ on every recording (timestamps,
-// event/object ids), so a blind copy would churn every baseline in git. Instead, for
-// each entry we export both the fresh recording and the committed baseline to AppMap's
-// JSON sequence diagram and compare a single digest over the root subtree digests —
-// which carries only AppMap `stableProperties` (normalized SQL, code-object identity,
-// exceptions) and excludes volatile data (elapsed time, ids, values). A baseline is
+// event/object ids), so a blind copy would churn every baseline in git. First we
+// `sanitize` the fresh recording (tokenizing captured values): the committed baseline
+// is itself sanitized, and sanitize can rewrite digest-relevant text (e.g. SQL
+// literals), so both sides of the compare must be sanitized for the gate to be honest.
+// Then for each entry we export both the (sanitized) fresh recording and the committed
+// baseline to AppMap's JSON sequence diagram and compare a single digest over the root
+// subtree digests — which excludes volatile data (elapsed time, ids). A baseline is
 // re-blessed only when that digest changed, so untouched baselines stay byte-identical.
 
 import { createHash } from 'node:crypto';
@@ -230,12 +232,20 @@ async function updateBaseline(env, entries, options) {
     await assertExists(freshAppMap, `Missing AppMap for ${entry.test_name} (record it first)`);
     const baselineAppMap = baselineAppMapPath(env, entry);
 
+    // Sanitize the fresh recording in place, up front. Two reasons: (1) so the
+    // form we commit as the baseline carries no secrets, and (2) so its digest is
+    // comparable to the committed baseline, which is also sanitized. Sanitize
+    // rewrites some digest-relevant text (e.g. SQL literals), so comparing a raw
+    // recording against a sanitized baseline would report false drift; sanitizing
+    // both sides makes the digest-gate honest. Seeding and blessing are then just
+    // copies of this already-sanitized recording.
+    sanitizeAppMap(env, freshAppMap);
+
     // No committed baseline yet: seed it (new manifest entry).
     if ((await readFileOrNull(baselineAppMap)) === null) {
       if (!options.dryRun) {
         await ensureDir(path.dirname(baselineAppMap));
         await fs.copyFile(freshAppMap, baselineAppMap);
-        trimBaseline(env, baselineAppMap);
       }
       seeded += 1;
       console.log(`  seed   ${entry.test_name}`);
@@ -252,7 +262,6 @@ async function updateBaseline(env, entries, options) {
 
     if (!options.dryRun) {
       await fs.copyFile(freshAppMap, baselineAppMap);
-      trimBaseline(env, baselineAppMap);
     }
     blessed += 1;
     console.log(`  bless  ${entry.test_name}`);
@@ -304,20 +313,22 @@ function cliInvocation(env) {
   return { bin, prefix };
 }
 
-// Trim captured value strings out of a committed baseline (via `appmap trim`)
-// so the baseline stays lean. Values are excluded from the bless digest, so
-// trimming never changes what a later review compares — it only removes bytes.
-// Done here, in the engine, so projects don't have to wire trimming into their
-// record command.
-function trimBaseline(env, baselineFile) {
+// Sanitize an AppMap in place (via `appmap sanitize`): replace every captured
+// value string with a per-file, equality-preserving token, so the committed
+// baseline is structurally incapable of carrying a secret. Sanitize is
+// deterministic and idempotent. It is applied to the fresh recording before the
+// baseline is digested and committed, so the digest comparison is
+// sanitized-vs-sanitized (see the call site). Done here, in the engine, so
+// projects don't have to wire sanitizing into their record command.
+function sanitizeAppMap(env, appmapFile) {
   const { bin, prefix } = cliInvocation(env);
   try {
-    runCommandQuiet(bin, [...prefix, 'trim', baselineFile], { cwd: env.workingDir });
+    runCommandQuiet(bin, [...prefix, 'sanitize', appmapFile], { cwd: env.workingDir });
   } catch (err) {
-    // `trim` shipped in @appland/appmap 3.200.0; an older CLI fails here.
+    // `sanitize` shipped in @appland/appmap 3.201.0; an older CLI fails here.
     throw new Error(
-      `${err.message}\n\nThe 'trim' command requires @appland/appmap >= 3.200.0. ` +
-        `Update the CLI, or point 'commands.appmap_cli' at a released version >= 3.200.0.`
+      `${err.message}\n\nThe 'sanitize' command requires @appland/appmap >= 3.201.0. ` +
+        `Update the CLI, or point 'commands.appmap_cli' at a released version >= 3.201.0.`
     );
   }
 }

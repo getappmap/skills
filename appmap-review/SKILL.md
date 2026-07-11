@@ -127,6 +127,12 @@ sequence diagrams under `report/diff/`. The diff sequence diagrams carry each
 action's `diffMode` (added/removed/changed) and its AppMap **labels** — the primary
 evidence for the recipe.
 
+Note: captured values in gold traces are **sanitized** — each is a stable,
+equality-preserving token (`<v1>`, `<uuid:v3>`), not real data. Reason from labels,
+call structure, and SQL *shape*, never from a value's contents; equal tokens still
+signal equal values (data flow), and both revisions are sanitized identically so a
+token never registers as a change.
+
 ## Interpret — the review recipe
 
 The compare output is *facts*; the **review is your interpretation of them** — what

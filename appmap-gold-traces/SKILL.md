@@ -94,7 +94,11 @@ Rule a candidate **out** before adding it to the manifest:
   See *Determinism*. Verify a fresh candidate is stable (`update --record --dry-run`
   twice → `unchanged`) before trusting it.
 - **It duplicates coverage.** Several traces walking the same path don't strengthen the
-  baseline; they multiply the review and bless cost. Keep one.
+  baseline; they multiply the review and bless cost. Keep one. In particular, don't map
+  unit tests one-to-one onto gold traces: when a subsystem needs coverage of several
+  branches (including the failure branch of a security check), write **one** test whose
+  fixture drives all of them and record that — branch coverage belongs inside the
+  fixture, not spread across manifest entries.
 
 Two practical notes from real baselines:
 
@@ -278,7 +282,7 @@ if the release touched no traceable application code.**
 |---|---|
 | `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
-| `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each recording before it is committed (`sanitize` needs **`@appland/appmap` ≥ 3.201.0**). Optional: left unset it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. Set it only to override, e.g. a prefix like `npx @appland/appmap`. |
+| `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each recording before it is committed (`sanitize` needs **`@appland/appmap` ≥ 3.201.0**). **Leave unset**: it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. A committed value is machine-specific config in a shared file (breaks on other machines/platforms); set it only for an unusual CLI location or a custom-compiled CLI (appmap-js itself sets `node built/cli.js`). |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
 | `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path`, `summary`. |
 

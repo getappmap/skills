@@ -83,43 +83,58 @@ This exact sequence is verified against `@appland/appmap` ≥ 3.200.0. Run it fr
 project root (which has `appmap.yml`). `$appmap_dir` is the `appmap_dir:` value from
 `appmap.yml` (e.g. `tmp/appmap`); `$BASE`/`$HEAD` are the two revisions.
 
+The project root may sit below the git repo root (e.g. `server/` in a monorepo).
+That's fine: `git ls-tree` returns paths relative to the current directory, and the
+`./` in `$ref:./$f` makes `git show` resolve them the same way.
+
+The workspace lives under the system temp dir, NOT inside the repo — work files in
+the repo tree can end up accidentally committed. The path is fixed (no random
+suffix) so later commands and inspection can find it; each run starts by clearing it.
+
 ```sh
 appmap_dir=$(sed -n 's/^appmap_dir: *//p' appmap.yml)   # e.g. tmp/appmap
-rm -rf .review
+review_root="${TMPDIR:-/tmp}/appmap-review"
+rm -rf "$review_root"
 
 # 1 — Extract each revision's committed gold traces into a per-revision working dir,
 #     under $appmap_dir, preserving each trace's sub-path (no basename flattening),
 #     and copy in appmap.yml so `archive` indexes both sides identically.
 for rev in base head; do
   ref=$([ "$rev" = base ] && echo "$BASE" || echo "$HEAD")
-  mkdir -p ".review/$rev/$appmap_dir"
-  cp appmap.yml ".review/$rev/appmap.yml"
+  mkdir -p "$review_root/$rev/$appmap_dir"
+  cp appmap.yml "$review_root/$rev/appmap.yml"
   for f in $(git ls-tree -r --name-only "$ref" | grep -E 'gold_traces/.*/appmaps/.*\.appmap\.json$'); do
     rel="${f##*/appmaps/}"                                # path under $appmap_dir
-    mkdir -p ".review/$rev/$appmap_dir/$(dirname "$rel")"
-    git show "$ref:$f" > ".review/$rev/$appmap_dir/$rel"
+    mkdir -p "$review_root/$rev/$appmap_dir/$(dirname "$rel")"
+    git show "$ref:./$f" > "$review_root/$rev/$appmap_dir/$rel"
   done
 done
 
 # 2 — Archive each side. archive's DEFAULT output is .appmap/archive/full/<rev>.tar;
 #     do NOT pass an absolute --output-file (the internal tar mangles it). Just cd in
 #     and pass --revision. archive runs the scanner and OpenAPI automatically.
-( cd .review/base && appmap archive --revision base )
-( cd .review/head && appmap archive --revision head )
+( cd "$review_root/base" && appmap archive --revision base )
+( cd "$review_root/head" && appmap archive --revision head )
 
-# 3 — Unpack each archive into <output-dir>/base and <output-dir>/head. `compare`
+# 3 — Restore each archive into <output-dir>/base and <output-dir>/head. `compare`
 #     REQUIRES the two revisions' data to already sit there before it runs, and it
 #     loads appmap.yml from its working dir — so put one there too.
-mkdir -p .review/out/report/base .review/out/report/head
-cp appmap.yml .review/out/appmap.yml
-tar xf .review/base/.appmap/archive/full/base.tar -C .review/out/report/base
-tar xf .review/head/.appmap/archive/full/head.tar -C .review/out/report/head
+#     Use `appmap restore`, NOT a manual `tar xf`: the archive nests the AppMaps and
+#     their index files inside an inner appmaps.tar.gz, and restore unpacks both
+#     layers. A single tar extraction leaves the inner tarball packed, and compare
+#     then sees ZERO appmaps on both sides and silently reports only the API diff.
+#     Don't pre-create the base/ and head/ dirs — restore refuses to write into a
+#     directory that already exists.
+mkdir -p "$review_root/out/report"
+cp appmap.yml "$review_root/out/appmap.yml"
+( cd "$review_root/base" && appmap restore --revision base --output-dir ../out/report/base )
+( cd "$review_root/head" && appmap restore --revision head --output-dir ../out/report/head )
 
 # 4 — Compare. base/ and head/ live UNDER --output-dir (here `report`); compare writes
 #     change-report.json and diff/ alongside them. Do NOT pass --clobber-output-dir —
-#     it would delete the base/ and head/ you just unpacked.
-( cd .review/out && appmap compare --base-revision base --head-revision head --output-dir report )
-# results: .review/out/report/change-report.json  and  .review/out/report/diff/
+#     it would delete the base/ and head/ you just restored.
+( cd "$review_root/out" && appmap compare --base-revision base --head-revision head --output-dir report )
+# results: $review_root/out/report/change-report.json  and  $review_root/out/report/diff/
 ```
 
 `compare` writes `change-report.json` (the structural facts) and per-trace diff

@@ -168,18 +168,20 @@ When `gold_traces/` does not yet exist:
    it; add `.appmap/` to the repo `.gitignore` if not.
 
 2. **Fill in the `commands`.** Determine the project's record command yourself by
-   inspecting the project. Check its `CLAUDE.md` first; if it isn't documented there,
-   figure it out from the project — the test runner and how it's invoked (`package.json`
+   inspecting the project. Lean heavily on the `appmap-record` skill to create sample
+   recordings for the project. You can also check the project's README and/or LLM instruction
+   files. Figure out the the test runner and how it's invoked (`package.json`
    scripts, `Makefile`, `pytest.ini`/`tox.ini`, `Gemfile`/`Rakefile`, CI workflows),
-   the AppMap recorder integration for that stack, and any env flag the recorder needs
-   (e.g. `APPMAP=true`). Write it into `manifest.yaml`'s `commands` block —
+   the AppMap recorder integration for that stack, and any flags or options that the recorder
+   needs. Write it into `manifest.yaml`'s `commands` block —
    after this it's the source of truth and you never re-derive it. Paths are derived,
-   not configured (see **Config reference**).
+   not configured (see **Config reference**). The record command MUST include tokens like
+   `{test_file}`, `{test_name}`, `{appmap_path}` to ensure that the record command records
+   a **specific** configured test, rather than running the whole test suite.
 
-3. **Curate the entries.** Replace the template entry with real `entries`.
-   Prefer real integration paths over validation-only branches, distinct
-   subsystems over duplicates, and **deterministic** traces (seed any RNG). Use
-   `feature` to group entries by subsystem. Make sure the security-relevant
+3. **Curate the entries.** Replace the template entry with real `entries`,
+   according to the guidance provided in the section **What makes a trace suitable**.
+   Use `feature` to group entries by subsystem. Make sure the security-relevant
    functions those traces exercise are **labeled** (see **appmap-label**) so
    appmap-review can interpret changes there.
 
@@ -289,10 +291,11 @@ Two levers, preferred order:
    ```
    Only exclude leaves whose behavior is already unit-tested and whose *callers*
    still appear in the trace. Never exclude a package whose call structure the
-   gold set exists to guard. See **appmap-label** for `exclude`/`packages` syntax
-   across languages. Changing `exclude` shrinks *every* affected baseline — the
+   gold set exists to guard. Changing `exclude` shrinks *every* affected baseline — the
    one case where re-blessing the whole set at once is correct (confirm each
-   diff is only the leaf removal, then bless all).
+   diff is only the leaf removal, then bless all). Consult the `appmap-record`
+   skill for information about the `exclude` syntax, and/or check the language
+   reference at https://appmap.io/docs/reference/.
 2. **Prefer a minimal fixture** for a new entry — build the minimal object graph
    the behavior needs (tens of events) instead of a heavyweight end-to-end setup.
 

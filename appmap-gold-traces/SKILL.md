@@ -125,36 +125,34 @@ node "<skill>/assets/manage.mjs" <command> --dir gold_traces [options]
 (`<skill>` is this skill's directory — substitute its absolute path. `--dir`
 defaults to `gold_traces`.)
 
-**Monorepos.** Two separable decisions — don't conflate them:
 
-*Where the baseline lives.* A `gold_traces/` per package (`packages/<name>/gold_traces/`)
+## Monorepos
+
+Keep a `gold_traces/` directory for each *appmap.yml* file in the project. 
+
+It's not your role to create or maintain *appmap.yml* files as part of gold traces maintenance.
+During initial setup, if the project doesn't contain any *appmap.yml* files, then this
+configuration needs to be created in collaboration with the user. 
+
+If the project is composed of more than one language (eg Python or Java backend, JS/TS frontend)
+then multiple *appmap.yml* files are **required**. If the project is a monorepo in which each
+sub-project is the same language (e.g. a Java or JS/TS monorepo), then a single *appmap.yml*
+can work; but *appmap.yml* per submodule can work as well.
+
+A `gold_traces/` per package (`packages/<name>/gold_traces/`)
 keeps traces versioned and reviewed alongside the code they guard, and lets packages be
 recorded and blessed independently (each `--dir` is its own baseline). A single repo-root
 `gold_traces/` is fine too when the repo is effectively one project. This is an ownership
 choice, not a technical one.
 
-*How recording is configured.* The recording is defined by the AppMap project —
-`appmap.yml` + its `appmap_dir` — which is usually **one config at the repo root** even
-when baselines are split per package. You don't configure paths: the engine runs the
-record/appmap commands from the **gold_traces parent directory** and reads recordings
-from wherever the **nearest-ancestor `appmap.yml`** collects them (its directory + its
+You don't configure paths: the engine runs the record/appmap commands from the **gold_traces parent directory** 
+and reads recordings from wherever the **nearest-ancestor `appmap.yml`** collects them (its directory + its
 `appmap_dir`). So for `packages/<name>/gold_traces`, commands run in `packages/<name>`
-and recordings come from the root `appmap.yml`'s `appmap_dir` — both derived:
+and recordings come from the nearest ancestor `appmap.yml`:
 
 ```sh
 node "<skill>/assets/manage.mjs" update --dir packages/<name>/gold_traces --record
 ```
-
-Make sure the package is listed in that root `appmap.yml` so its code is instrumented.
-Note the consequence: a shared multi-package `appmap.yml` **co-instruments sibling
-packages that appear in the call path** — so a trace can legitimately capture a callee in
-another package (richer cross-package behavior), but the baseline then couples to that
-package, and appmap-node names code objects relative to the *common ancestor* of all
-instrumented packages, so a trace's package root shifts (`src` → `<pkg>`/`<sibling>`)
-depending on which siblings it touches. If you want a trace isolated to one package's
-code, give that package its own scoped `appmap.yml` (`path: <pkg>/src`) instead — at the
-cost of not seeing across the boundary. Either is valid; just record the whole set with
-**one** of them (see *Record consistently*).
 
 ## Bootstrap (first time in a project)
 

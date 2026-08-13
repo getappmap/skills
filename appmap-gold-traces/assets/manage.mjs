@@ -8,10 +8,17 @@
 //
 //   node <skill>/assets/manage.mjs update --dir gold_traces --record
 //   node <skill>/assets/manage.mjs update --dir gold_traces --only test_foo --dry-run
+//   node <skill>/assets/manage.mjs discover --dir gold_traces --test-file tests/test_foo.py --test-name test_bar
 //
-// It does two things — record the gold tests, and BLESS the baselines — and nothing
-// else. Diffing and interpreting a change (regression? unintended side effect?) is the
-// appmap-review skill's job, not this engine's.
+// It does three things — record the gold tests, BLESS the baselines, and DISCOVER a
+// test's appmap_path — and nothing else. Diffing and interpreting a change
+// (regression? unintended side effect?) is the appmap-review skill's job, not this
+// engine's.
+//
+// The recorder alone decides where a recording file lands under appmap_dir — the
+// record command cannot direct it. So `discover` derives an entry's appmap_path
+// empirically: snapshot appmap_dir, run the one test, and report which appmap files
+// the run produced.
 //
 // The bless is DIGEST-GATED. Raw appmaps differ on every recording (timestamps,
 // event/object ids), so a blind copy would churn every baseline in git. First we
@@ -61,6 +68,11 @@ async function main() {
   const tempRoot = path.join(appmapYmlDir, '.appmap', 'gold-traces');
   const env = { ...paths, config, workingDir, appmapYmlDir, appmapsDir, tempRoot };
 
+  if (command === 'discover') {
+    await discoverAppmapPath(env, options);
+    return;
+  }
+
   let entries = config.entries;
   if (options.only.length > 0) {
     const wanted = new Set(options.only);
@@ -77,8 +89,9 @@ async function main() {
     return;
   }
   throw new Error(
-    `Unknown command: ${command}. This engine only maintains baselines ('update'). ` +
-      `To diff/review a change, use the appmap-review skill.`,
+    `Unknown command: ${command}. This engine maintains baselines ('update') and ` +
+      `finds a test's appmap_path ('discover'). To diff/review a change, use the ` +
+      `appmap-review skill.`,
   );
 }
 
@@ -89,6 +102,8 @@ function parseArgs(args) {
     record: false,
     dryRun: false,
     only: [],
+    testFile: null,
+    testName: null,
   };
 
   let command = null;
@@ -123,6 +138,16 @@ function parseArgs(args) {
       }
       continue;
     }
+    if (arg === '--test-file') {
+      index += 1;
+      options.testFile = args[index] ?? null;
+      continue;
+    }
+    if (arg === '--test-name') {
+      index += 1;
+      options.testName = args[index] ?? null;
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -131,20 +156,26 @@ function parseArgs(args) {
 
 function printHelp() {
   console.log(`Usage:
-  node <skill>/assets/manage.mjs update [--dir DIR] [--only TEST] [--record] [--dry-run]
+  node <skill>/assets/manage.mjs update   [--dir DIR] [--only TEST] [--record] [--dry-run]
+  node <skill>/assets/manage.mjs discover [--dir DIR] --test-file FILE --test-name NAME
 
 Maintains the committed gold-trace baselines. Diffing/reviewing a change is the
 appmap-review skill's job, not this engine's.
 
-  update   Re-bless baselines, but only the traces whose behavior changed
-           (digest-gated, so untouched baselines stay byte-identical). Seeds a
-           baseline for any entry that doesn't have one yet.
+  update    Re-bless baselines, but only the traces whose behavior changed
+            (digest-gated, so untouched baselines stay byte-identical). Seeds a
+            baseline for any entry that doesn't have one yet.
+  discover  Find a test's appmap_path for a new manifest entry: records the one
+            test and reports which appmap files the run produced (relative to
+            appmap_dir), plus a paste-ready entry stub. Needs commands.record.
 
 Options:
   --dir DIR           Managed gold-traces directory, relative to the project root (default: gold_traces).
-  --only TEST         Limit to the named test (repeatable).
-  --record            Re-record each selected test first (needs commands.record in the manifest).
-  --dry-run           Report what would be blessed/seeded without writing anything.
+  --only TEST         update: limit to the named test (repeatable).
+  --record            update: re-record each selected test first (needs commands.record in the manifest).
+  --dry-run           update: report what would be blessed/seeded without writing anything.
+  --test-file FILE    discover: the test file, as commands.record needs it.
+  --test-name NAME    discover: the test function/case name.
   --help              Show this help.
 `);
 }
@@ -218,9 +249,7 @@ async function locateAppmap(startDir) {
 // ---------------------------------------------------------------------------
 
 async function updateBaseline(env, entries, options) {
-  if (options.record) {
-    await rerecordEntries(env, entries);
-  }
+  const produced = options.record ? await rerecordEntries(env, entries) : null;
 
   const freshSeqDir = tempSequenceDir(env, 'update-current');
   const baseSeqDir = tempSequenceDir(env, 'update-baseline');
@@ -233,7 +262,17 @@ async function updateBaseline(env, entries, options) {
 
   for (const entry of entries) {
     const freshAppMap = currentAppMapPath(env, entry);
-    await assertExists(freshAppMap, `Missing AppMap for ${entry.test_name} (record it first)`);
+    try {
+      await fs.access(freshAppMap);
+    } catch {
+      // A wrong appmap_path guess fails here. When we just recorded, we know what
+      // the run actually produced — surface it so the entry can be corrected.
+      const candidates = produced?.get(entry.test_name) ?? [];
+      const hint = candidates.length > 0
+        ? `\nThe record step produced: ${candidates.join(', ')}\nFix the entry's appmap_path (see the 'discover' command).`
+        : '';
+      throw new Error(`Missing AppMap for ${entry.test_name} (record it first): ${freshAppMap}${hint}`);
+    }
     const baselineAppMap = baselineAppMapPath(env, entry);
 
     // Sanitize the fresh recording in place, up front. Two reasons: (1) so the
@@ -279,19 +318,106 @@ async function rerecordEntries(env, entries) {
   if (!env.config.record) {
     throw new Error(`--record requires 'commands.record' in ${env.manifestPath}`);
   }
+  const produced = new Map();
   for (const entry of entries) {
     const appmapOutput = currentAppMapPath(env, entry);
     await fs.rm(appmapOutput, { force: true });
-    const command = substitute(env.config.record, {
-      test_file: entry.test_file,
-      test_name: entry.test_name,
-      appmap_path: entry.appmap_path,
-    });
-    runShell(command, {
-      cwd: env.workingDir,
-      env: { ...process.env, ...env.config.record_env },
-    });
+    const before = await snapshotAppmaps(env.appmapsDir);
+    runRecordCommand(env, entry.test_file, entry.test_name);
+    produced.set(entry.test_name, changedAppmaps(before, await snapshotAppmaps(env.appmapsDir)));
   }
+  return produced;
+}
+
+function runRecordCommand(env, testFile, testName) {
+  // The record command names only the test to run ({test_file}/{test_name}); the
+  // recorder alone decides where the recording file lands under appmap_dir.
+  const command = substitute(env.config.record, { test_file: testFile, test_name: testName });
+  runShell(command, {
+    cwd: env.workingDir,
+    env: { ...process.env, ...env.config.record_env },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// discover — find a test's appmap_path by observing the recorder
+// ---------------------------------------------------------------------------
+
+// The appmap_path of a manifest entry is the recorder's choice, not ours: snapshot
+// appmap_dir, record the one test, and report every appmap file the run created or
+// rewrote. The caller copies the reported path into the manifest entry — nothing is
+// written here.
+async function discoverAppmapPath(env, options) {
+  if (!options.testFile || !options.testName) {
+    throw new Error(`discover requires --test-file and --test-name`);
+  }
+  if (!env.config.record) {
+    throw new Error(`discover requires 'commands.record' in ${env.manifestPath}`);
+  }
+  const before = await snapshotAppmaps(env.appmapsDir);
+  runRecordCommand(env, options.testFile, options.testName);
+  const candidates = changedAppmaps(before, await snapshotAppmaps(env.appmapsDir));
+  if (candidates.length === 0) {
+    throw new Error(
+      `The record command wrote no AppMap under ${env.appmapsDir}. ` +
+        `The test records nothing — it is not a gold-trace candidate.`,
+    );
+  }
+
+  console.log(`Recording(s) produced (relative to ${env.appmapsDir}):`);
+  for (const candidate of candidates) {
+    console.log(`  ${candidate}`);
+  }
+  if (candidates.length > 1) {
+    console.log(`\nMultiple recordings — pick the one that captures the behavior to guard (a curation call).`);
+  }
+  console.log(`\nManifest entry stub (paste under 'entries' in ${env.manifestPath}):
+
+  - feature: TODO
+    test_file: ${options.testFile}
+    test_name: ${options.testName}
+    appmap_path: ${candidates[0]}
+    summary: TODO`);
+}
+
+// Map of appmap-file relative path -> change signature, recursively under dir.
+// A missing dir is an empty snapshot (the recorder may not have created it yet).
+async function snapshotAppmaps(dir) {
+  const snapshot = new Map();
+  async function walk(current) {
+    let dirents;
+    try {
+      dirents = await fs.readdir(current, { withFileTypes: true });
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        return;
+      }
+      throw error;
+    }
+    for (const dirent of dirents) {
+      const full = path.join(current, dirent.name);
+      if (dirent.isDirectory()) {
+        await walk(full);
+      } else if (dirent.name.endsWith('.appmap.json')) {
+        const stat = await fs.stat(full);
+        snapshot.set(path.relative(dir, full), `${stat.mtimeMs}:${stat.size}`);
+      }
+    }
+  }
+  await walk(dir);
+  return snapshot;
+}
+
+// Paths new in `after` or whose signature changed — i.e. what the record run wrote.
+// Re-recording an existing test overwrites its file, so "modified" counts too.
+function changedAppmaps(before, after) {
+  const changed = [];
+  for (const [relPath, signature] of after) {
+    if (before.get(relPath) !== signature) {
+      changed.push(relPath);
+    }
+  }
+  return changed.sort();
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +698,7 @@ function parseScalar(raw) {
   return value;
 }
 
-export { parseYaml, diagramDigest };
+export { parseYaml, diagramDigest, changedAppmaps };
 
 // Resolve symlinks on argv[1]: import.meta.url is always realpath-resolved, but
 // the invoked path may be a symlink (this skill is commonly symlinked into a

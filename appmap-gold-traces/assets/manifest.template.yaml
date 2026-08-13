@@ -15,10 +15,11 @@ schema_version: 1
 
 commands:
   # Command template that (re-)records ONE golden test, run via the shell from
-  # this file's parent directory when --record is passed. Placeholders per entry:
-  #   {test_file}   the entry's test_file
-  #   {test_name}   the entry's test_name
-  #   {appmap_path} the entry's appmap_path
+  # this file's parent directory (used by --record and discover). Placeholders:
+  #   {test_file}   the test file to run
+  #   {test_name}   the test function/case name
+  # The command names only the test — it cannot choose where the recording file
+  # lands; the recorder decides that, under appmap_dir.
   # Pick the line for your stack and delete the rest (these are examples):
   #
   #   pytest (appmap-python):
@@ -53,7 +54,8 @@ commands:
 #   test_file    the test that produces the recording (as the record command
 #                needs it — relative to this file's parent dir, where it runs)
 #   test_name    the test function/case name
-#   appmap_path  recording path relative to the project's appmap_dir (from appmap.yml)
+#   appmap_path  recording path relative to the project's appmap_dir — get it
+#                from the engine's `discover` command; don't guess it
 #   summary      short human context for what the trace demonstrates
 #
 # Curation: prefer one deterministic, lean recording per release-critical subsystem

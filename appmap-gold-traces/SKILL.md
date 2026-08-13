@@ -175,15 +175,25 @@ When `gold_traces/` does not yet exist:
    the AppMap recorder integration for that stack, and any flags or options that the recorder
    needs. Write it into `manifest.yaml`'s `commands` block —
    after this it's the source of truth and you never re-derive it. Paths are derived,
-   not configured (see **Config reference**). The record command MUST include tokens like
-   `{test_file}`, `{test_name}`, `{appmap_path}` to ensure that the record command records
-   a **specific** configured test, rather than running the whole test suite.
+   not configured (see **Config reference**). The record command MUST include the
+   `{test_file}` and `{test_name}` tokens so it records one **specific** test rather
+   than running the whole suite. The command cannot choose where the recording file
+   lands — the recorder decides that, under `appmap_dir`. Don't add output-path
+   flags; record, then find the file with `discover` (step 3).
 
 3. **Curate the entries.** Replace the template entry with real `entries`,
    according to the guidance provided in the section **What makes a trace suitable**.
-   Use `feature` to group entries by subsystem. Make sure the security-relevant
-   functions those traces exercise are **labeled** (see **appmap-label**) so
-   appmap-review can interpret changes there.
+   Get each entry's `appmap_path` from the engine — do **not** guess it from naming
+   conventions or hunt for recordings with `ls`/`find`:
+   ```sh
+   node "<skill>/assets/manage.mjs" discover --dir gold_traces \
+     --test-file <test_file> --test-name <test_name>
+   ```
+   `discover` records the one test and prints the recording path(s) it produced,
+   relative to `appmap_dir` — exactly the `appmap_path` value — plus a paste-ready
+   entry stub. Use `feature` to group entries by subsystem. Make sure the
+   security-relevant functions those traces exercise are **labeled** (see
+   **appmap-label**) so appmap-review can interpret changes there.
 
 4. **Seed the baseline.** Record each entry and copy the recording into the
    baseline:
@@ -218,7 +228,8 @@ if the release touched no traceable application code.**
    ```
    Review traceable change since then (`git log <that-commit>..HEAD --oneline -- <app source>`)
    and **enhance the entries** for new/changed subsystems: add an entry for a
-   newly-critical path this release introduced or materially changed. `update` seeds a
+   newly-critical path this release introduced or materially changed (get its
+   `appmap_path` from `discover` — see **Engine commands**). `update` seeds a
    baseline for any newly-added entry automatically (`update --only <test> --record`).
 
 2. **Re-record and see what changed** — a dry run re-records and reports which traces
@@ -257,12 +268,12 @@ if the release touched no traceable application code.**
 
 | Field | Meaning |
 |---|---|
-| `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}`, `{appmap_path}` are substituted per entry. Only needed for `--record`. |
+| `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}` are substituted per run. Needed for `--record` and `discover`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
 | `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each recording before it is committed (`sanitize` needs **`@appland/appmap` ≥ 3.201.0**). **Leave unset**: it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. A committed value is machine-specific config in a shared file (breaks on other machines/platforms); set it only for an unusual CLI location or a custom-compiled CLI (appmap-js itself sets `node built/cli.js`). |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
 | `allow_values` *(optional)* | Values `appmap sanitize` keeps verbatim in blessed baselines (the engine passes them via `--allow-file`), exact whole-value match. Curate small public vocabularies only (enum state/role names); never anything that could identify a person or authenticate a request. |
-| `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path`, `summary`. |
+| `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path` (get it from `discover`), `summary`. |
 
 Paths are **derived**: commands run from the gold_traces parent directory, and
 recordings are read from the nearest-ancestor `appmap.yml` (its directory + its
@@ -310,12 +321,16 @@ with no code change, fix the test before blessing it.
 
 ## Engine commands
 
-The engine has a single command — `update` (record + digest-gated bless). Diffing
-and reviewing a change is the **appmap-review** skill's job.
+The engine has two commands — `update` (record + digest-gated bless) and `discover`
+(find a new entry's `appmap_path`). Diffing and reviewing a change is the
+**appmap-review** skill's job.
 
 ```
-update  [--dir DIR] [--only TEST] [--record] [--dry-run]
+update    [--dir DIR] [--only TEST] [--record] [--dry-run]
+discover  [--dir DIR] --test-file FILE --test-name NAME
 ```
+
+`update`:
 
 - Re-blesses each baseline whose behavior changed (copies the fresh recording over
   it) and **seeds** a baseline for any entry that lacks one. A trace whose behavioral
@@ -323,3 +338,10 @@ update  [--dir DIR] [--only TEST] [--record] [--dry-run]
 - `--record` re-records each selected test first (needs `commands.record`).
 - `--dry-run` reports what would be blessed/seeded without writing.
 - `--only TEST` (repeatable) limits the run to named entries.
+
+`discover`:
+
+- Records the one test via `commands.record` and reports every appmap file the run
+  produced — paths relative to `appmap_dir`, i.e. the entry's `appmap_path` — plus a
+  paste-ready entry stub. This is **the** way to determine an `appmap_path`; never
+  derive one by hand.

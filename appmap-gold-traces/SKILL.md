@@ -29,7 +29,7 @@ The model is **curate → record → bless**, with the diff-and-review delegated
 1. A manifest (`gold_traces/manifest.yaml`) names a curated set of tests and the
    recordings they produce.
 2. The raw baseline AppMaps are committed under `baseline/appmaps/` — the source of
-   truth: deliberately blessed, diffable per-trace, small (KBs). Everything derived
+   truth: deliberately blessed, sanitized, small (KBs). Everything derived
    (sequence diagrams, archives, the review) is produced on demand and not committed.
 3. To decide what to bless on a release, re-record the gold tests and **review the
    change with appmap-review** (whether a change is intended, a regression, or a side
@@ -61,65 +61,42 @@ A good gold trace is the **smallest deterministic recording that exercises one
 release-critical subsystem once**. Curate for *distinct* coverage: prefer one
 representative trace per subsystem over many near-identical ones.
 
-**Reuse an existing test before synthesizing one.** A repo usually already has a
-test that drives the subsystem end-to-end — point the manifest at that. Before
+**Reuse an existing test before synthesizing one.** A repo may already have a
+test that exercises a feature end-to-end — point the manifest at that. Before
 adding an entry, search the suite for coverage of the command/handler you want to
-guard; a manifest of existing tests stays in sync with the code as those tests
-evolve, whereas synthesized invocations rot on their own. This is especially true
-for a CLI: record the command's **handler test**, not the built binary driven as a
-process. A process recording of the whole binary drags in boot-time work — arg
-parsing, config loading, env probing for optional integrations — which is noise at
-best and *nondeterministic across machines* at worst (e.g. filesystem probes for an
-IDE that exists on your box but not on CI). The handler test enters at the command
-logic and captures just that. Synthesize a fresh test only when no existing one
-covers the path — and then it's a normal test the suite should keep anyway.
+guard. Synthesize a fresh test only when no existing one covers the path — and then 
+it's a new, normal, test that the project will benefit from.
 
 Rule a candidate **out** before adding it to the manifest:
 
-- **It records nothing.** Some tests assert over in-memory data without driving the
-  instrumented call graph (e.g. a validator fed a literal object, a pure-function unit
-  test). If `update --record` produces no AppMap at the entry's `appmap_path`, the test
-  is not a gold-trace candidate — its behavior isn't being captured. Confirm an entry
-  actually records before committing it.
+- **It records little or nothing.** Some tests assert over in-memory data without driving the
+  instrumented call graph. Confirm that a test actually records a useful amount of data before 
+  committing it. Granular unit tests aren't a good candidate for gold traces.
 - **Its size is repetition, not structure.** A loop- or large-fixture-driven test can
-  balloon to MBs because the *same* helper frames repeat per iteration. The exported
-  sequence diagram (what the digest is computed from) collapses those repeats, so the
-  extra megabytes add **zero** digest signal — they're pure git weight. Distinguish the
+  balloon to MBs because the *same* helper function invocations repeat per iteration. Distinguish the
   two size modes before reacting: many big *parameter values* → the engine's `sanitize`
   step already replaces these with short tokens, so they add little committed weight
   (values aren't behavioral; see *Keeping traces lean*); many *repeated events* → pick a
-  smaller fixture, or keep just one dedicated loop trace (and no more).
+  smaller fixture, or update *appmap.yml* to `exclude` the repeated function (especially if
+  it's trivial in nature, and/or well-covered by a unit test).
 - **It is nondeterministic.** Unseeded RNG, wall-clock branching, or run-to-run ordering
   drift makes the trace bless on every compare and trains you to ignore real changes.
   See *Determinism*. Verify a fresh candidate is stable (`update --record --dry-run`
-  twice → `unchanged`) before trusting it.
+  twice → `unchanged`) before trusting it. Consider making an unstable test stable, by
+  fixing the random behavior (e.g. changing the test setup to use a fixed seed).
 - **It duplicates coverage.** Several traces walking the same path don't strengthen the
-  baseline; they multiply the review and bless cost. Keep one. In particular, don't map
-  unit tests one-to-one onto gold traces: when a subsystem needs coverage of several
-  branches (including the failure branch of a security check), write **one** test whose
-  fixture drives all of them and record that — branch coverage belongs inside the
-  fixture, not spread across manifest entries.
+  baseline; they multiply the review and bless cost. Keep one.
 
-Two practical notes from real baselines:
+## Sanitization
 
 - **Values are not behavior — and the engine strips them.** On bless the engine runs
   **`appmap sanitize`** (needs `@appland/appmap` ≥ 3.201.0) on the fresh recording,
   replacing every captured parameter/return/message value with a short,
   equality-preserving token (`<v1>`, `<uuid:v3>`). So the committed baseline is
-  structurally incapable of carrying a secret, and much smaller. Sanitize is
-  deterministic and idempotent, but it *can* rewrite digest-relevant text (e.g. SQL
-  literals) — so the engine sanitizes the fresh recording **before** computing its bless
-  digest and compares that against the (also sanitized) committed baseline: an honest,
-  sanitized-vs-sanitized gate that never reports false drift. This is automatic; projects
-  don't wire sanitizing into their record command.
-- **Sharing a recording basename is legal but worth knowing.** AppMaps are identified by
-  their full path under `appmap_dir`, so two entries in different directories whose files
-  share a basename (distinct `describe` blocks both ending in `is_recorded`) are perfectly
-  distinct recordings. The catch is downstream: the CLI's `sequence-diagram` export names
-  its output after the AppMap's *basename only*, so two such entries would otherwise write
-  the same `<basename>.sequence.json`. The engine isolates each entry's export in its own
-  subdirectory keyed by the full `appmap_path` to prevent that aliasing — but distinct
-  names still keep the manifest and derived exports easier to read.
+  structurally incapable of carrying a secret, and it's also smaller. The engine sanitizes 
+  the recordings **before** computing its bless digest and compares that against the (also sanitized) 
+  committed baseline. Sanitization is performed by the gold trace helper functions and CLI commands;
+  you don't need to add it explicitly.
 
 ## Layout
 

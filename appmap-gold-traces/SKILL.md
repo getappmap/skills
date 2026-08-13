@@ -19,7 +19,7 @@ history, compares them, and writes the interpreted review.
 - Keep traces lean and deterministic so the comparison stays trustworthy.
 
 This is the *baseline-maintenance* layer over AppMap. To make recordings, see
-**appmap-record**; to scope/label what gets recorded, see **appmap-label**; to **review** a change, see **appmap-review**.
+**appmap-record**; to **review** a change, see **appmap-review**.
 
 ## How it works
 
@@ -191,9 +191,7 @@ When `gold_traces/` does not yet exist:
    ```
    `discover` records the one test and prints the recording path(s) it produced,
    relative to `appmap_dir` — exactly the `appmap_path` value — plus a paste-ready
-   entry stub. Use `feature` to group entries by subsystem. Make sure the
-   security-relevant functions those traces exercise are **labeled** (see
-   **appmap-label**) so appmap-review can interpret changes there.
+   entry stub. Use `feature` to group entries by subsystem.
 
 4. **Seed the baseline.** Record each entry and copy the recording into the
    baseline:

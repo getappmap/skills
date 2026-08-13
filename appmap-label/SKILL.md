@@ -329,7 +329,3 @@ functional naming is preferred) — remove before merge.
 
 - **appmap-record** — making recordings (test, HTTP, programmatic)
   once configuration is set.
-- **appmap-analyze** — querying labeled calls via `find_calls
-  label=<name>`.
-- **appmap-fix** — the loop that decides *when* to add a label vs
-  extend `packages:`.

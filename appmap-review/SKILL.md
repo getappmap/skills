@@ -26,9 +26,6 @@ diff review.
 - Given two revisions (or one baseline and the current HEAD), produce the review.
 - Investigate how a release changed server behavior versus a prior revision.
 
-To make recordings, see **appmap-record**; to scope/label what gets recorded, see
-**appmap-label**; to maintain the gold-trace baseline, see **appmap-gold-traces**.
-
 ## Arguments
 
 ```

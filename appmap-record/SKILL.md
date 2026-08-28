@@ -417,6 +417,17 @@ mvn com.appland:appmap-maven-plugin:prepare-agent test
 **Surefire note**: `forkCount` must not be `0`, and if `argLine` is set it
 must include `@{argLine}`.
 
+**Multi-module projects**: by default each module writes its own `tmp/appmap/`
+and reads its own `appmap.yml`. To share one config and one output directory
+across all modules, point the plugin at the repo root:
+
+```xml
+<configuration>
+    <configFile>${maven.multiModuleProjectDirectory}/appmap.yml</configFile>
+    <outputDirectory>${maven.multiModuleProjectDirectory}/tmp/appmap</outputDirectory>
+</configuration>
+```
+
 ### Record tests with Gradle
 
 Add to `build.gradle`:

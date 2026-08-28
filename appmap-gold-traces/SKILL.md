@@ -279,8 +279,8 @@ recordings are read from the nearest-ancestor `appmap.yml` (its directory + its
 within an AppMap project.
 
 The YAML is read by a small bundled parser: block maps/lists only, no flow
-collections/anchors/inline `#` comments. Quote any value containing a
-colon-then-space.
+collections/anchors/inline `#` comments (e.g. `entries: []` is rejected —
+always write a block list). Quote any value containing a colon-then-space.
 
 ## Keeping traces lean
 

@@ -254,14 +254,30 @@ The report is **findings-first**: the reader lands on the verdict and the action
 findings; the evidence that backs them is one click away. The recipe above is
 unchanged — this section is how its output is *rendered*. Four principles govern it:
 
-- **Plain language.** The report is read by people who haven't read the diff and
-  don't know this skill's internals. No invented shorthand ("static residue",
-  "footprint minus intent", "parser reach") and no recipe jargon — say what happened
-  in ordinary words ("behavior changed in code this PR didn't touch"). Every finding
-  and ledger note must make sense on its own, without reading the recipe, the other
-  sections, or the code. Prefer a short concrete sentence over a compressed technical
-  phrase; expand product terms on first use ("the digest — the fingerprint used to
-  decide whether behavior changed").
+- **Plain language, for a reader who has never opened this codebase.** The report
+  is read by people who haven't read the diff, don't know this skill's internals, and
+  may not know the application. Write every finding so that such a reader can follow
+  it end to end without opening a file. Concretely:
+  - Say what happens to a *person* before what happens to a *function*: "the person
+    is logged out", "the key is not issued", "bob is created and then deleted again".
+    Then name the code that does it.
+  - Ordinary words over security or engineering shorthand. Not "fail-closed", "inherits
+    the gate", "call shape", "footprint", "static residue", "blast radius", "guard",
+    "negative branch". Say "both paths refuse the key", "gets the check from its
+    parent class", "the order of calls changed", "code this PR didn't touch", "the
+    test that checks refusal".
+  - Introduce every name before using it: a function, a controller, a table, a page.
+    One clause is enough ("`ApiKey.issue`, the one function that hands out keys").
+  - Expand product terms on first use ("gold traces — recorded test runs that show
+    which functions and queries each test actually executes").
+  - The test: read the finding aloud to a colleague from another team. If it sounds
+    like a design document, rewrite it.
+- **Diagram the mechanism.** A finding about a sequence of steps, a branch, or two
+  paths that differ gets an ASCII diagram, not a paragraph. Draw the real path from
+  the recording: the steps in order, the point where the check fires, and where the
+  two outcomes split. Mark what is tested and what is not. A diagram plus three plain
+  sentences beats four dense paragraphs. Keep it inside a fenced block so it survives
+  GitHub rendering; keep lines under 90 characters so it does not wrap.
 
 - **Single home.** Every fact is stated exactly once. A finding lives in **Findings**
   and nowhere else — ledger and coverage rows *reference* it by number (`→ #2`). A
@@ -278,9 +294,10 @@ unchanged — this section is how its output is *rendered*. Four principles gove
   absence, SQL, HTTP) earns exactly one ledger row with a one-line note. Prose exists
   only where there are findings to explain.
 
-Prose budgets: Feature List entries are strictly one line; **Risk** and **Fix** are
-≤ 2 sentences each; code blocks only where the reader should copy-paste. Step 1's
-intended-scope notes are working input to Step 5 — don't render them.
+Prose budgets: Feature List entries are strictly one line; **Background**, **What is
+right**, **What is off**, and **Fix** are ≤ 3 sentences each; code blocks only for a
+diagram or where the reader should copy-paste. Step 1's intended-scope notes are
+working input to Step 5 — don't render them.
 
 Keep the scannable idiom: emoji severity markers, ✅/❌ tables, clickable `file:line`
 links. Structure (outer fence is `~~~` so nested code blocks can use normal
@@ -293,7 +310,17 @@ the detail stays accessible without being paid for on every read):
 **Revisions:** `<head>` vs `<baseline>` · **Date:** <YYYY-MM-DD> ·
 **Commits:** `<sha>` <short subject> · … (group out-of-scope commits in one parenthetical)
 
-> ⚠️ <Cross-cutting caveat, only if any — stated once here, referenced elsewhere.>
+> ⚠️ **How this review works.** <Two or three sentences for a reader who has never
+> heard of gold traces: recorded test runs were re-run on the head revision and
+> compared with the base revision's recordings. Then any cross-cutting caveat — first
+> baseline, uncommitted head recordings, entries with nothing to compare against —
+> stated once here and referenced elsewhere.>
+
+## What the change does
+
+One paragraph, in ordinary words, for someone who has not read the PR: what a user
+can now do or no longer can, which doors it applies to, and what stays the same.
+Name the feature the way a person would, not the way the code does.
 
 ## Summary
 
@@ -309,16 +336,29 @@ One or two sentences: merge-blocking or not, and the single most important actio
 
 Numbered across all severities, ordered by severity.
 
-### 1 · 🔴 HIGH — <one-line title>
+### 1 · 🔴 HIGH — <one-line title, in plain words: what happens to whom>
 
-**File:** [path:line](path) · **Context:** `<fn>` · **Evidence:** <trace name +
-changed node + label — or "source diff only" when no trace covers it>
+**File:** [path:line](path) · **Evidence:** <trace name — or "source diff only"
+when no trace covers it>
 
-One short paragraph: what the evidence shows and what it means in this codebase —
-reason from label + structure + source diff.
+**Background.** Two or three sentences a newcomer needs before the finding makes
+sense: what this part of the app does for a person, and which function or page is
+involved (named once, explained once).
 
-**Risk:** who/what is exposed and how reachable it is (≤ 2 sentences).
-**Fix:** the concrete change, then the regression test to add (≤ 2 sentences +
+```
+<ASCII diagram of the real path, drawn from the recording or the diff:
+ the steps in order, the point where the check fires, where outcomes split,
+ and which branch is tested. Under 90 columns.>
+```
+
+**What is right.** What the change gets correct, in one or two sentences, so the
+reader knows the finding is not "this feature is broken".
+
+**What is off.** What the evidence shows and why it matters, said from the person's
+side first ("the person is logged out"), then the code's side. Who is exposed and
+how reachable it is, in ordinary words.
+
+**Fix.** The concrete change, then the regression test to add (≤ 3 sentences plus a
 copy-paste block if warranted):
 
 ```python
@@ -328,21 +368,25 @@ def test_cannot_<bypass>(...):
 
 ### 🟢 Low
 
-- **4** · <title> — [file:line](path) — one-sentence action.
+- **4** · <title in plain words> — [file:line](path) — one sentence on what is off,
+  one on the fix. A low finding about a sequence of steps still gets the short
+  diagram; drop the Background and What-is-right parts.
 
 ## Checks performed
 
 The audit trail: every pass the review ran, one row each.
 
+Row labels are plain words; recipe step numbers never appear in the rendered report.
+
 | Check | Result | Note |
 | --- | --- | --- |
-| Behavioral compare | ✅ clean · ⚠️ changes → #n · — not run | <one line, e.g. "timing noise is filtered out, so every reported change is real"> |
-| Changes outside the PR's scope (Step 5) | ✅ none · ⚠️ → #n | <one line> |
-| Missing guards (Step 6) | ✅ · 🔴 → #n | <one line> |
-| Test/recording coverage (Step 2) | ✅ · ❌ n gaps (detail ↓) | <one line> |
-| SQL (Step 4b) | ✅ clean · ⚠️ → #n | <one line> |
-| HTTP (Step 4c) | ✅ clean · ⚠️ → #n | <one line> |
-| Intended changes verified | ✅ | <one line — the cleared features, with their evidence> |
+| Recorded behavior compared | ✅ no change · ⚠️ n changed, n new, n removed → #n · — not run | <one line, e.g. "run-to-run noise such as timings and generated values is ignored, so every reported change is a real difference in what ran"> |
+| Behavior changed in code the PR did not touch | ✅ none · ⚠️ → #n | <one line> |
+| Places that should have the check but do not | ✅ · 🔴 → #n | <one line> |
+| Tests and recordings for the new behavior | ✅ · ❌ n gaps (detail ↓) | <one line> |
+| Database queries | ✅ clean · ⚠️ → #n | <one line> |
+| HTTP responses | ✅ clean · ⚠️ → #n | <one line> |
+| Intended changes confirmed by a recording | ✅ | <one line — the cleared features, with their evidence> |
 
 <details>
 <summary><b>Review detail</b> — features, coverage, labels, drift</summary>
@@ -402,6 +446,11 @@ side effects (mechanical propagation, confirmed blast radius).
   conditional guard. Flag the missing negative trace.
 - **Cite evidence for every finding** (trace name + changed node + label + `file:line`),
   so the report is auditable against the compare output and the diff.
+- **Write for a reader who has never seen the code.** Labels, node names, and recipe
+  steps are how *you* reason; they are not how the finding is explained. A finding is
+  finished when someone from another team can read it, look at the diagram, and say
+  back what happens to the person and what to change. If explaining it needs a term
+  like "fail-closed" or "guard", replace the term with the thing it stands for.
 - **A clean compare is a valid report:** render it as ✅ rows in the checks ledger
   (noting that timing/value jitter is excluded by construction), rather than omitting
   the report — the ledger is what proves the checks ran.

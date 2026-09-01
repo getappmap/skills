@@ -28,6 +28,12 @@ exists, so most invocations work without prior configuration. Built-in
 hooks capture HTTP, SQL, exceptions, and labeled functions even with
 no `packages:` declared.
 
+When writing `appmap.yml`, quote method identifiers containing `#`
+(`"MyClass#instance_method"`). YAML otherwise treats a whitespace-preceded `#`
+as the start of a comment, which can silently broaden an exclusion to the class.
+See **appmap-label** for language-specific package, function, label, and exclusion
+syntax.
+
 ## After recording: index for queries
 
 Recordings are written as `.appmap.json` files. To query them with

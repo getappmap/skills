@@ -127,6 +127,16 @@ functions:
 from `packages:`) is the supported way to scope by class — list the
 methods to record, optionally apply labels to them in the same pass.
 
+**Quote every YAML scalar containing `#`.** In YAML, an unquoted `#` preceded by
+whitespace starts a comment, so `- MyClass#method` can be parsed as `MyClass` and
+accidentally exclude the entire class. Always write:
+
+```yaml
+exclude:
+  - "MyClass#instance_method"
+  - MyClass.class_method
+```
+
 ### Where labels and yaml meet
 
 The `functions:` block applies labels to functions you may not own

@@ -11,7 +11,7 @@
 # or anchors). No `#` comments on the same line as a value. Quote any value that
 # contains a colon-followed-by-space.
 
-schema_version: 1
+schema_version: 2
 
 commands:
   # Command template that (re-)records ONE golden test, run via the shell from
@@ -57,6 +57,9 @@ commands:
 #   appmap_path  recording path relative to the project's appmap_dir — get it
 #                from the engine's `discover` command; don't guess it
 #   summary      short human context for what the trace demonstrates
+#   expect       code objects that must occur in the recording. Use AppMap ids:
+#                MyClass#instance_method or MyClass.class_method.
+#   expect_labels optional semantic labels that must occur in the recording.
 #
 # Curation: prefer one deterministic, lean recording per release-critical subsystem
 # over many near-identical ones. Reuse an existing test before synthesizing one.
@@ -66,3 +69,8 @@ entries:
     test_name: test_login_verifies_token_and_mints_session
     appmap_path: pytest/test_login_verifies_token_and_mints_session.appmap.json
     summary: Full auth happy path from token verification through session minting.
+    expect:
+      - "AuthService#verify_token"
+      - "SessionService#mint"
+    expect_labels:
+      - security.authentication

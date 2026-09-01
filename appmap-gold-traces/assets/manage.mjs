@@ -9,9 +9,10 @@
 //   node <skill>/assets/manage.mjs update --dir gold_traces --record
 //   node <skill>/assets/manage.mjs update --dir gold_traces --only test_foo --dry-run
 //   node <skill>/assets/manage.mjs discover --dir gold_traces --test-file tests/test_foo.py --test-name test_bar
+//   node <skill>/assets/manage.mjs check --dir gold_traces --record
 //
-// It does three things — record the gold tests, BLESS the baselines, and DISCOVER a
-// test's appmap_path — and nothing else. Diffing and interpreting a change
+// It records the gold tests, checks trace suitability, blesses baselines, and
+// discovers a test's appmap_path. Diffing and interpreting a change
 // (regression? unintended side effect?) is the appmap-review skill's job, not this
 // engine's.
 //
@@ -61,12 +62,12 @@ async function main() {
   // the recordings live where the nearest-ancestor appmap.yml says (its dir + its
   // appmap_dir field — which is also the AppMap project root for the CLI).
   const workingDir = path.dirname(goldDir);
-  const { appmapYmlDir, appmapDir } = await locateAppmap(goldDir);
+  const { appmapYmlDir, appmapDir, packagePaths } = await locateAppmap(goldDir);
   const appmapsDir = path.join(appmapYmlDir, appmapDir);
   // Derived sequence exports go under that project's `.appmap/` (regenerable,
   // gitignored — the same place the CLI writes archives/work), namespaced here.
   const tempRoot = path.join(appmapYmlDir, '.appmap', 'gold-traces');
-  const env = { ...paths, config, workingDir, appmapYmlDir, appmapsDir, tempRoot };
+  const env = { ...paths, config, workingDir, appmapYmlDir, appmapsDir, packagePaths, tempRoot };
 
   if (command === 'discover') {
     await discoverAppmapPath(env, options);
@@ -88,9 +89,14 @@ async function main() {
     await updateBaseline(env, entries, options);
     return;
   }
+  if (command === 'check') {
+    await checkBaselines(env, entries, options);
+    return;
+  }
   throw new Error(
-    `Unknown command: ${command}. This engine maintains baselines ('update') and ` +
-      `finds a test's appmap_path ('discover'). To diff/review a change, use the ` +
+    `Unknown command: ${command}. This engine maintains baselines ('update'), checks ` +
+      `trace suitability ('check'), and finds a test's appmap_path ('discover'). ` +
+      `To diff/review a change, use the ` +
       `appmap-review skill.`,
   );
 }
@@ -157,6 +163,7 @@ function parseArgs(args) {
 function printHelp() {
   console.log(`Usage:
   node <skill>/assets/manage.mjs update   [--dir DIR] [--only TEST] [--record] [--dry-run]
+  node <skill>/assets/manage.mjs check    [--dir DIR] [--only TEST] [--record]
   node <skill>/assets/manage.mjs discover [--dir DIR] --test-file FILE --test-name NAME
 
 Maintains the committed gold-trace baselines. Diffing/reviewing a change is the
@@ -165,14 +172,16 @@ appmap-review skill's job, not this engine's.
   update    Re-bless baselines, but only the traces whose behavior changed
             (digest-gated, so untouched baselines stay byte-identical). Seeds a
             baseline for any entry that doesn't have one yet.
+  check     Report size, shape, repetition, and required code-object coverage.
+            With --record, record twice and fail if the behavioral digest drifts.
   discover  Find a test's appmap_path for a new manifest entry: records the one
-            test and reports which appmap files the run produced (relative to
-            appmap_dir), plus a paste-ready entry stub. Needs commands.record.
+            test, checks each recording's shape, and reports which appmap files
+            the run produced, plus a paste-ready entry stub. Needs commands.record.
 
 Options:
   --dir DIR           Managed gold-traces directory, relative to the project root (default: gold_traces).
-  --only TEST         update: limit to the named test (repeatable).
-  --record            update: re-record each selected test first (needs commands.record in the manifest).
+  --only TEST         update/check: limit to the named test (repeatable).
+  --record            update: record before updating. check: record twice and verify stability.
   --dry-run           update: report what would be blessed/seeded without writing anything.
   --test-file FILE    discover: the test file, as commands.record needs it.
   --test-name NAME    discover: the test function/case name.
@@ -194,6 +203,10 @@ async function loadManifest(manifestPath) {
     throw new Error(`Invalid gold-traces manifest: ${manifestPath}`);
   }
   const commands = manifest.commands ?? {};
+  const schemaVersion = Number(manifest.schema_version ?? 1);
+  if (!Number.isInteger(schemaVersion) || ![1, 2].includes(schemaVersion)) {
+    throw new Error(`Unsupported gold-traces schema_version '${manifest.schema_version}' in ${manifestPath}; expected 1 or 2.`);
+  }
   const entries = manifest.entries ?? [];
   if (!Array.isArray(entries)) {
     throw new Error(`'entries' must be a list: ${manifestPath}`);
@@ -210,7 +223,7 @@ async function loadManifest(manifestPath) {
     // small public vocabularies only (enum state/role names); never anything that
     // identifies a person or authenticates a request.
     allow_values: Array.isArray(manifest.allow_values) ? manifest.allow_values.map(String) : [],
-    entries,
+    entries: entries.map((entry) => ({ ...entry, require_expect: schemaVersion >= 2 })),
   };
 }
 
@@ -234,7 +247,15 @@ async function locateAppmap(startDir) {
     if (raw !== null) {
       const match = raw.split(/\r?\n/).map((line) => /^appmap_dir:\s*(.+?)\s*$/.exec(line)).find(Boolean);
       const appmapDir = match ? match[1].replace(/^["']|["']$/g, '') : 'tmp/appmap';
-      return { appmapYmlDir: dir, appmapDir };
+      const configuredPackagePaths = raw.split(/\r?\n/)
+        .map((line) => /^\s*-\s+path:\s*(.+?)\s*$/.exec(line))
+        .filter(Boolean)
+        .map((packageMatch) => packageMatch[1].replace(/^["']|["']$/g, ''));
+      const packagePaths = [...new Set(configuredPackagePaths.flatMap((packagePath) => [
+        packagePath,
+        path.resolve(dir, packagePath),
+      ]))];
+      return { appmapYmlDir: dir, appmapDir, packagePaths };
     }
     const parent = path.dirname(dir);
     if (parent === dir) {
@@ -250,6 +271,7 @@ async function locateAppmap(startDir) {
 
 async function updateBaseline(env, entries, options) {
   const produced = options.record ? await rerecordEntries(env, entries) : null;
+  await validateFreshEntries(env, entries, produced);
 
   const freshSeqDir = tempSequenceDir(env, 'update-current');
   const baseSeqDir = tempSequenceDir(env, 'update-baseline');
@@ -267,22 +289,13 @@ async function updateBaseline(env, entries, options) {
     } catch {
       // A wrong appmap_path guess fails here. When we just recorded, we know what
       // the run actually produced — surface it so the entry can be corrected.
-      const candidates = produced?.get(entry.test_name) ?? [];
+      const candidates = produced?.get(entryKey(entry)) ?? [];
       const hint = candidates.length > 0
         ? `\nThe record step produced: ${candidates.join(', ')}\nFix the entry's appmap_path (see the 'discover' command).`
         : '';
       throw new Error(`Missing AppMap for ${entry.test_name} (record it first): ${freshAppMap}${hint}`);
     }
     const baselineAppMap = baselineAppMapPath(env, entry);
-
-    // Sanitize the fresh recording in place, up front. Two reasons: (1) so the
-    // form we commit as the baseline carries no secrets, and (2) so its digest is
-    // comparable to the committed baseline, which is also sanitized. Sanitize
-    // rewrites some digest-relevant text (e.g. SQL literals), so comparing a raw
-    // recording against a sanitized baseline would report false drift; sanitizing
-    // both sides makes the digest-gate honest. Seeding and blessing are then just
-    // copies of this already-sanitized recording.
-    sanitizeAppMap(env, freshAppMap);
 
     // No committed baseline yet: seed it (new manifest entry).
     if ((await readFileOrNull(baselineAppMap)) === null) {
@@ -314,6 +327,84 @@ async function updateBaseline(env, entries, options) {
   console.log(`${verb} ${blessed}, seeded ${seeded}, unchanged ${unchanged} (of ${entries.length}).`);
 }
 
+async function validateFreshEntries(env, entries, produced) {
+  const failures = [];
+  for (const entry of entries) {
+    const freshAppMap = currentAppMapPath(env, entry);
+    try {
+      await fs.access(freshAppMap);
+    } catch {
+      const candidates = produced?.get(entryKey(entry)) ?? [];
+      const hint = candidates.length > 0
+        ? ` The record step produced: ${candidates.join(', ')}. Fix appmap_path with discover.`
+        : '';
+      failures.push(`${entry.test_name}: missing ${freshAppMap}.${hint}`);
+      continue;
+    }
+    const assessment = assessAppMap(await readJson(freshAppMap), entry, (await fs.stat(freshAppMap)).size, env.packagePaths);
+    printAssessment(entry, assessment, { details: false });
+    failures.push(...assessment.errors.map((error) => `${entry.test_name}: ${error}`));
+    if (assessment.errors.length === 0) sanitizeAppMap(env, freshAppMap);
+  }
+  if (failures.length > 0) {
+    throw new Error(`Gold trace suitability check failed:\n  ${failures.join('\n  ')}`);
+  }
+}
+
+async function checkBaselines(env, entries, options) {
+  if (!options.record) {
+    let failed = false;
+    for (const entry of entries) {
+      const appmapFile = baselineAppMapPath(env, entry);
+      await assertExists(appmapFile, `Missing baseline for ${entry.test_name}`);
+      const assessment = assessAppMap(await readJson(appmapFile), entry, (await fs.stat(appmapFile)).size, env.packagePaths);
+      printAssessment(entry, assessment, { details: true });
+      failed ||= assessment.errors.length > 0;
+    }
+    if (failed) throw new Error('Gold trace suitability check failed.');
+    console.log(`Checked ${entries.length} baseline trace(s).`);
+    return;
+  }
+
+  if (!env.config.record) {
+    throw new Error(`check --record requires 'commands.record' in ${env.manifestPath}`);
+  }
+  const first = await recordCheckPass(env, entries, 'check-first', true);
+  const second = await recordCheckPass(env, entries, 'check-second', false);
+  const unstable = entries.filter((entry) => first.get(entryKey(entry)) !== second.get(entryKey(entry)));
+  if (unstable.length > 0) {
+    throw new Error(`Nondeterministic gold traces: ${unstable.map((entry) => entry.test_name).join(', ')}`);
+  }
+  console.log(`Checked ${entries.length} trace(s): suitable and stable across two recordings.`);
+}
+
+async function recordCheckPass(env, entries, sequenceName, printDetails) {
+  const produced = await rerecordEntries(env, entries);
+  const failures = [];
+  const digests = new Map();
+  const sequenceDir = tempSequenceDir(env, sequenceName);
+  await ensureDir(sequenceDir);
+  for (const entry of entries) {
+    const candidates = produced.get(entryKey(entry)) ?? [];
+    if (!candidates.includes(entry.appmap_path)) {
+      failures.push(`${entry.test_name}: expected ${entry.appmap_path}; produced ${candidates.join(', ') || 'nothing'}`);
+      continue;
+    }
+    const appmapFile = currentAppMapPath(env, entry);
+    const assessment = assessAppMap(await readJson(appmapFile), entry, (await fs.stat(appmapFile)).size, env.packagePaths);
+    if (printDetails) printAssessment(entry, assessment, { details: true });
+    failures.push(...assessment.errors.map((error) => `${entry.test_name}: ${error}`));
+    if (assessment.errors.length === 0) {
+      sanitizeAppMap(env, appmapFile);
+      digests.set(entryKey(entry), diagramDigest(await readJson(await exportSequenceDiagram(env, appmapFile, sequenceDir, entry))));
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`Gold trace suitability check failed:\n  ${failures.join('\n  ')}`);
+  }
+  return digests;
+}
+
 async function rerecordEntries(env, entries) {
   if (!env.config.record) {
     throw new Error(`--record requires 'commands.record' in ${env.manifestPath}`);
@@ -324,7 +415,7 @@ async function rerecordEntries(env, entries) {
     await fs.rm(appmapOutput, { force: true });
     const before = await snapshotAppmaps(env.appmapsDir);
     runRecordCommand(env, entry.test_file, entry.test_name);
-    produced.set(entry.test_name, changedAppmaps(before, await snapshotAppmaps(env.appmapsDir)));
+    produced.set(entryKey(entry), changedAppmaps(before, await snapshotAppmaps(env.appmapsDir)));
   }
   return produced;
 }
@@ -337,6 +428,10 @@ function runRecordCommand(env, testFile, testName) {
     cwd: env.workingDir,
     env: { ...process.env, ...env.config.record_env },
   });
+}
+
+function entryKey(entry) {
+  return `${entry.test_file}\0${entry.test_name}\0${entry.appmap_path ?? ''}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +465,11 @@ async function discoverAppmapPath(env, options) {
   }
   if (candidates.length > 1) {
     console.log(`\nMultiple recordings — pick the one that captures the behavior to guard (a curation call).`);
+  }
+  for (const candidate of candidates) {
+    const appmapFile = path.join(env.appmapsDir, candidate);
+    const assessment = assessAppMap(await readJson(appmapFile), {}, (await fs.stat(appmapFile)).size, env.packagePaths);
+    printAssessment({ test_name: candidate }, assessment, { details: true });
   }
   console.log(`\nManifest entry stub (paste under 'entries' in ${env.manifestPath}):
 
@@ -509,6 +609,123 @@ function diagramDigest(diagram) {
     hash.update(action.subtreeDigest ?? '');
   }
   return hash.digest('hex');
+}
+
+const DEFAULT_HYGIENE = {
+  min_events: 10,
+  warn_bytes: 500 * 1024,
+  warn_events: 1500,
+  warn_repeat_count: 100,
+  warn_repeat_ratio: 0.25,
+};
+
+function assessAppMap(appmap, entry = {}, byteSize = 0, projectPackages = []) {
+  const events = Array.isArray(appmap.events) ? appmap.events : [];
+  const calls = events.filter((event) => event.event === 'call');
+  const codeObjects = new Set();
+  const projectCodeObjects = new Set();
+  const labels = new Set();
+  const frequencies = new Map();
+  let sqlQueries = 0;
+  let httpRequests = 0;
+
+  for (const event of calls) {
+    if (event.sql_query) {
+      sqlQueries += 1;
+      frequencies.set('SQL', (frequencies.get('SQL') ?? 0) + 1);
+      continue;
+    }
+    if (event.http_server_request || event.http_client_request) httpRequests += 1;
+    if (!event.defined_class || !event.method_id) continue;
+    const separator = event.static ? '.' : '#';
+    const codeObject = `${event.defined_class}${separator}${event.method_id}`;
+    codeObjects.add(codeObject);
+    if (isProjectCode(event.path, projectPackages)) projectCodeObjects.add(codeObject);
+    frequencies.set(codeObject, (frequencies.get(codeObject) ?? 0) + 1);
+  }
+
+  const repeated = [...frequencies.entries()].sort((a, b) => b[1] - a[1]);
+  const errors = [];
+  const warnings = [];
+  if (events.length === 0) errors.push('contains zero events');
+  else if (events.length < DEFAULT_HYGIENE.min_events) warnings.push(`contains only ${events.length} events`);
+  if (calls.length === 0) errors.push('contains no function, HTTP, or SQL calls');
+
+  const required = Array.isArray(entry.expect) ? entry.expect.map(String) : [];
+  if (entry.require_expect && required.length === 0) errors.push('has no expect coverage declaration');
+  const missing = required.filter((codeObject) => !codeObjects.has(codeObject));
+  if (missing.length > 0) errors.push(`missing required code objects: ${missing.join(', ')}`);
+  collectLabels(appmap.classMap, labels);
+  const requiredLabels = Array.isArray(entry.expect_labels) ? entry.expect_labels.map(String) : [];
+  const missingLabels = requiredLabels.filter((label) => !labels.has(label));
+  if (missingLabels.length > 0) errors.push(`missing required labels: ${missingLabels.join(', ')}`);
+
+  if (byteSize > DEFAULT_HYGIENE.warn_bytes) warnings.push(`is large (${formatBytes(byteSize)})`);
+  if (events.length > DEFAULT_HYGIENE.warn_events) warnings.push(`has ${events.length} events`);
+  const noisy = repeated.filter(([, count]) =>
+    count >= DEFAULT_HYGIENE.warn_repeat_count && count / Math.max(calls.length, 1) >= DEFAULT_HYGIENE.warn_repeat_ratio);
+  if (noisy.length > 0) {
+    warnings.push(`is dominated by repeated calls: ${noisy.slice(0, 3).map(([name, count]) => `${count}x ${name}`).join(', ')}`);
+  }
+
+  return {
+    bytes: byteSize,
+    events: events.length,
+    calls: calls.length,
+    sql_queries: sqlQueries,
+    http_requests: httpRequests,
+    code_objects: codeObjects.size,
+    project_code_objects: [...projectCodeObjects].sort(),
+    labels: [...labels].sort(),
+    top_repeated: repeated.slice(0, 5),
+    errors,
+    warnings,
+  };
+}
+
+function printAssessment(entry, assessment, { details }) {
+  const verdict = assessment.errors.length > 0 ? 'FAIL' : assessment.warnings.length > 0 ? 'WARN' : 'OK';
+  console.log(`  ${verdict.padEnd(4)} ${entry.test_name}: ${formatBytes(assessment.bytes)}, ${assessment.events} events, ` +
+    `${assessment.code_objects} code objects, ${assessment.sql_queries} SQL, ${assessment.http_requests} HTTP, ` +
+    `${assessment.labels.length} labels`);
+  for (const warning of assessment.warnings) console.log(`       warning: ${warning}`);
+  for (const error of assessment.errors) console.log(`       error: ${error}`);
+  if (details) {
+    if (assessment.top_repeated.length > 0) {
+      console.log(`       repeated: ${assessment.top_repeated.map(([name, count]) => `${count}x ${name}`).join(', ')}`);
+    }
+    if (assessment.labels.length > 0) console.log(`       labels: ${assessment.labels.join(', ')}`);
+    if (assessment.project_code_objects.length > 0) {
+      const shown = assessment.project_code_objects.slice(0, 30);
+      const remaining = assessment.project_code_objects.length - shown.length;
+      console.log(`       project code objects: ${shown.join(', ')}${remaining > 0 ? ` (+${remaining} more)` : ''}`);
+    }
+  }
+}
+
+function isProjectCode(eventPath, projectPackages) {
+  if (!eventPath || eventPath.startsWith('<')) return false;
+  const absoluteEvent = path.isAbsolute(eventPath);
+  const normalized = eventPath.replaceAll(path.sep, '/').replace(/^\.\//, '');
+  return projectPackages.some((packagePath) => {
+    const packagePrefix = packagePath.replaceAll(path.sep, '/').replace(/^\.\//, '').replace(/\/$/, '');
+    if (packagePrefix === '.') return !absoluteEvent && !normalized.startsWith('node_modules/');
+    if (absoluteEvent !== path.isAbsolute(packagePath)) return false;
+    return normalized === packagePrefix || normalized.startsWith(`${packagePrefix}/`);
+  });
+}
+
+function collectLabels(nodes, labels) {
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    for (const label of Array.isArray(node.labels) ? node.labels : []) labels.add(String(label));
+    collectLabels(node.children, labels);
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +870,8 @@ function parseList(lines, index, indent) {
     }
     if (itemLines.length === 0) {
       arr.push(null);
-    } else if (itemLines.length === 1 && !/^[^:\s][^:]*:(\s|$)/.test(itemLines[0].content)) {
+    } else if (itemLines.length === 1 && (isQuotedScalar(itemLines[0].content) ||
+      !/^[^:\s][^:]*:(\s|$)/.test(itemLines[0].content))) {
       arr.push(parseScalar(itemLines[0].content));
     } else {
       const [value] = parseBlock(itemLines, 0, itemLines[0].indent);
@@ -698,7 +916,12 @@ function parseScalar(raw) {
   return value;
 }
 
-export { parseYaml, diagramDigest, changedAppmaps };
+function isQuotedScalar(value) {
+  return (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"));
+}
+
+export { parseYaml, diagramDigest, changedAppmaps, assessAppMap };
 
 // Resolve symlinks on argv[1]: import.meta.url is always realpath-resolved, but
 // the invoked path may be a symlink (this skill is commonly symlinked into a

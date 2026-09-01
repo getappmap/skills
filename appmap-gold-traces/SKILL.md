@@ -81,11 +81,27 @@ Rule a candidate **out** before adding it to the manifest:
   it's trivial in nature, and/or well-covered by a unit test).
 - **It is nondeterministic.** Unseeded RNG, wall-clock branching, or run-to-run ordering
   drift makes the trace bless on every compare and trains you to ignore real changes.
-  See *Determinism*. Verify a fresh candidate is stable (`update --record --dry-run`
-  twice → `unchanged`) before trusting it. Consider making an unstable test stable, by
-  fixing the random behavior (e.g. changing the test setup to use a fixed seed).
+  See *Determinism*. Verify a fresh candidate with `check --record` before trusting it.
+  Consider making an unstable test stable by fixing the random behavior (e.g. changing
+  the test setup to use a fixed seed).
 - **It duplicates coverage.** Several traces walking the same path don't strengthen the
   baseline; they multiply the review and bless cost. Keep one.
+
+**This suitability check is mandatory, not user-prompted.** After adding or changing
+an entry, run:
+
+```sh
+node "<skill>/assets/manage.mjs" check --dir gold_traces --record \
+  --only <test_name>
+```
+
+`check --record` records twice, verifies behavioral-digest stability, and reports
+bytes, events, project code objects (for authoring `expect`), labels, SQL/HTTP
+counts, and dominant repeated calls. It fails
+on empty traces and unmet `expect`/`expect_labels` coverage. Large or repetitive
+traces produce warnings that must be resolved or explicitly judged acceptable before blessing.
+Do this automatically whenever curating a trace; do not wait for the user to ask
+whether trace sizes and shapes are appropriate.
 
 ## Sanitization
 
@@ -191,24 +207,36 @@ When `gold_traces/` does not yet exist:
    ```
    `discover` records the one test and prints the recording path(s) it produced,
    relative to `appmap_dir` — exactly the `appmap_path` value — plus a paste-ready
-   entry stub. Use `feature` to group entries by subsystem.
+   entry stub. Use `feature` to group entries by subsystem. Add an `expect` list
+   naming the release-critical code objects the trace must execute. For paths
+   whose semantics depend on AppMap labels, add `expect_labels`; event count
+   alone cannot prove coverage.
 
-4. **Seed the baseline.** Record each entry and copy the recording into the
+4. **Check suitability and stability.** This is required for every new entry:
+   ```sh
+   node "<skill>/assets/manage.mjs" check --dir gold_traces --record
+   ```
+   Resolve failures and investigate warnings. Reuse a better existing test before
+   synthesizing a focused test; synthesize only when no existing test captures the
+   required path.
+
+5. **Seed the baseline.** Reuse the second checked recording and copy it into the
    baseline:
    ```sh
-   node "<skill>/assets/manage.mjs" update --dir gold_traces --record
+   node "<skill>/assets/manage.mjs" update --dir gold_traces
    ```
-   `update --record` re-records every manifest entry and seeds `baseline/appmaps/`
+   `update` seeds `baseline/appmaps/`
    (every entry is new on the first run, so all are seeded). To seed only specific
-   entries, add `--only <test_name>`, repeatable.
+   entries, add `--only <test_name>`, repeatable. `update` also runs the structural
+   suitability gate before writing.
 
-5. **Mark baselines binary** so Git doesn't produce noisy line diffs. Add to the
+6. **Mark baselines binary** so Git doesn't produce noisy line diffs. Add to the
    repo-root `.gitattributes`:
    ```
    gold_traces/baseline/appmaps/**/*.appmap.json binary
    ```
 
-6. **Commit** the new baseline as its own change:
+7. **Commit** the new baseline as its own change:
    ```sh
    git add gold_traces .gitattributes
    git commit -m "chore(gold-traces): establish baseline"
@@ -227,13 +255,18 @@ if the release touched no traceable application code.**
    Review traceable change since then (`git log <that-commit>..HEAD --oneline -- <app source>`)
    and **enhance the entries** for new/changed subsystems: add an entry for a
    newly-critical path this release introduced or materially changed (get its
-   `appmap_path` from `discover` — see **Engine commands**). `update` seeds a
-   baseline for any newly-added entry automatically (`update --only <test> --record`).
+   `appmap_path` from `discover` — see **Engine commands**). Check new entries
+   with `check --only <test> --record`; after review, `update --only <test>`
+   seeds their baselines from the checked recordings.
 
-2. **Re-record and see what changed** — a dry run re-records and reports which traces
-   drifted, writing nothing:
+2. **Check, re-record, and see what changed.** First run the mandatory suitability
+   and two-recording stability check:
    ```sh
-   node "<skill>/assets/manage.mjs" update --dir gold_traces --record --dry-run
+   node "<skill>/assets/manage.mjs" check --dir gold_traces --record
+   ```
+   Then reuse its fresh recordings in a dry run:
+   ```sh
+   node "<skill>/assets/manage.mjs" update --dir gold_traces --dry-run
    ```
    It marks each trace `bless` (behavior changed), `seed` (new entry), or counts it
    `unchanged`. The digest excludes timing/value jitter, so a `bless` is a real change.
@@ -264,6 +297,10 @@ if the release touched no traceable application code.**
 `gold_traces/manifest.yaml` — one file: recording `commands` + the curated
 `entries`. Paths are **not** configured — they are derived.
 
+Schema version 2 requires every entry to declare `expect`. Schema version 1
+remains readable for existing repositories, but should be migrated by adding
+coverage expectations and changing `schema_version` to `2`.
+
 | Field | Meaning |
 |---|---|
 | `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}` are substituted per run. Needed for `--record` and `discover`. |
@@ -271,7 +308,7 @@ if the release touched no traceable application code.**
 | `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each recording before it is committed (`sanitize` needs **`@appland/appmap` ≥ 3.201.0**). **Leave unset**: it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. A committed value is machine-specific config in a shared file (breaks on other machines/platforms); set it only for an unusual CLI location or a custom-compiled CLI (appmap-js itself sets `node built/cli.js`). |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
 | `allow_values` *(optional)* | Values `appmap sanitize` keeps verbatim in blessed baselines (the engine passes them via `--allow-file`), exact whole-value match. Curate small public vocabularies only (enum state/role names); never anything that could identify a person or authenticate a request. |
-| `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path` (get it from `discover`), `summary`. |
+| `entries` | The curated list. Each: `feature`, `test_file`, `test_name`, `appmap_path` (get it from `discover`), `summary`, an `expect` list of required AppMap code-object ids, and optional `expect_labels`. |
 
 Paths are **derived**: commands run from the gold_traces parent directory, and
 recordings are read from the nearest-ancestor `appmap.yml` (its directory + its
@@ -280,7 +317,8 @@ within an AppMap project.
 
 The YAML is read by a small bundled parser: block maps/lists only, no flow
 collections/anchors/inline `#` comments (e.g. `entries: []` is rejected —
-always write a block list). Quote any value containing a colon-then-space.
+always write a block list). Quote any value containing a colon-then-space or
+`#`, including instance-method ids such as `"Auth#login"`.
 
 ## Keeping traces lean
 
@@ -290,14 +328,16 @@ called thousands of times in one request → a multi-MB blob that is pure noise)
 Two levers, preferred order:
 
 1. **Exclude a well-tested, high-call pure leaf** in the project's `appmap.yml`.
-   AppMap reads `exclude` **per-package, relative to the package `path`** — a
-   top-level `exclude:` is silently ignored. Correct form:
+   A package-local path exclusion is relative to that package's `path`:
    ```yaml
    packages:
      - path: my_pkg
        exclude:
-         - geometry.distance   # relative to path; pure math, called ~16k times
+        - geometry.distance
    ```
+   Method ids containing `#` must be quoted in YAML, for example
+   `"Geometry#distance"`. Without quotes YAML can parse the suffix as a comment
+   and silently broaden the exclusion to the entire class.
    Only exclude leaves whose behavior is already unit-tested and whose *callers*
    still appear in the trace. Never exclude a package whose call structure the
    gold set exists to guard. Changing `exclude` shrinks *every* affected baseline — the
@@ -319,14 +359,27 @@ with no code change, fix the test before blessing it.
 
 ## Engine commands
 
-The engine has two commands — `update` (record + digest-gated bless) and `discover`
-(find a new entry's `appmap_path`). Diffing and reviewing a change is the
+The engine has three commands — `check` (shape, coverage, and stability), `update`
+(record + digest-gated bless), and `discover` (find a new entry's `appmap_path`).
+Diffing and reviewing a change is the
 **appmap-review** skill's job.
 
 ```
 update    [--dir DIR] [--only TEST] [--record] [--dry-run]
+check     [--dir DIR] [--only TEST] [--record]
 discover  [--dir DIR] --test-file FILE --test-name NAME
 ```
+
+`check`:
+
+- Without `--record`, checks committed baselines.
+- With `--record`, records twice and fails on behavioral drift.
+- Reports size and shape without relying on `jq`, `du`, or other optional shell
+  tools.
+- Fails on zero-event/no-call traces and missing `expect` code objects or
+  `expect_labels`.
+- Warns at 500 KiB, 1,500 events, or when one call repeats at least 100 times and
+  accounts for at least 25% of calls.
 
 `update`:
 
@@ -343,3 +396,5 @@ discover  [--dir DIR] --test-file FILE --test-name NAME
   produced — paths relative to `appmap_dir`, i.e. the entry's `appmap_path` — plus a
   paste-ready entry stub. This is **the** way to determine an `appmap_path`; never
   derive one by hand.
+- Prints the same size/shape assessment for every candidate so empty or noisy
+  recordings are visible before they enter the manifest.

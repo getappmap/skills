@@ -90,10 +90,11 @@ Follow **appmap-gold-traces** bootstrap: `gold_traces/manifest.yaml` +
 `baseline/appmaps/`, `.gitattributes` marks baselines binary. Curate one lean,
 deterministic integration test per subsystem relevant to the BASE..HEAD feature
 (DAO/service paths with SQL beat granular unit tests). Use the engine's
-`discover` for every `appmap_path`; seed with `update --record`; prove
-determinism by running `update --record --dry-run` and requiring
-`unchanged N (of N)`. Base the manifest's record command on the working
-commands documented in Phase 4. Commit.
+`discover` for every `appmap_path`, and give each entry an `expect` list of
+the code objects it must execute. Run `check --record` — it records twice,
+fails on empty traces, missing `expect` coverage, or run-to-run drift, and
+warns on large or repetitive traces. Then seed with `update`. Base the
+manifest's record command on the working commands documented in Phase 4. Commit.
 
 ## Phase 7 — Replay onto HEAD
 
@@ -111,9 +112,10 @@ integration recording, including any test the feature added.
 
 ## Phase 8 — Update gold traces on HEAD (commit 5)
 
-`update --record --dry-run` shows which baselines drifted. Bless only drift the
-review explains. Add a new entry for the path the feature changed (its new test
-is usually the right one), seed with `update --only <test> --record`. Commit.
+Run `check --record`, then `update --dry-run` to see which baselines drifted.
+Bless only drift the review explains. Add a new entry for the path the feature
+changed (its new test is usually the right one), check it with
+`check --only <test> --record`, then seed with `update --only <test>`. Commit.
 
 ## Phase 9 — appmap-review BASE vs HEAD
 

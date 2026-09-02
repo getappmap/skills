@@ -50,6 +50,8 @@ enough.
 1. Code object names
 2. AppMap **labels** on the functions involved (`security.*`, `io.*`, …).
 
+The label names and how to apply them per language are in **appmap-config**.
+
 **Record consistently.** Every gold trace must be recorded with the *same* capture
 config — e.g. SQL capture on, labels applied. If the config changes, re-record the
 whole set; otherwise a later review is swamped by instrumentation drift instead of
@@ -144,16 +146,13 @@ defaults to `gold_traces`.)
 
 ## Monorepos
 
-Keep a `gold_traces/` directory for each *appmap.yml* file in the project. 
+Keep a `gold_traces/` directory for each *appmap.yml* file in the project.
 
 It's not your role to create or maintain *appmap.yml* files as part of gold traces maintenance.
 During initial setup, if the project doesn't contain any *appmap.yml* files, then this
-configuration needs to be created in collaboration with the user. 
-
-If the project is composed of more than one language (eg Python or Java backend, JS/TS frontend)
-then multiple *appmap.yml* files are **required**. If the project is a monorepo in which each
-sub-project is the same language (e.g. a Java or JS/TS monorepo), then a single *appmap.yml*
-can work; but *appmap.yml* per submodule can work as well.
+configuration needs to be created in collaboration with the user. How many
+*appmap.yml* files a project needs (one per language, one or more per monorepo) is
+covered in **appmap-config**, "Layout".
 
 A `gold_traces/` per package (`packages/<name>/gold_traces/`)
 keeps traces versioned and reviewed alongside the code they guard, and lets packages be
@@ -335,16 +334,13 @@ Two levers, preferred order:
        exclude:
         - geometry.distance
    ```
-   Method ids containing `#` must be quoted in YAML, for example
-   `"Geometry#distance"`. Without quotes YAML can parse the suffix as a comment
-   and silently broaden the exclusion to the entire class.
    Only exclude leaves whose behavior is already unit-tested and whose *callers*
    still appear in the trace. Never exclude a package whose call structure the
    gold set exists to guard. Changing `exclude` shrinks *every* affected baseline — the
    one case where re-blessing the whole set at once is correct (confirm each
-   diff is only the leaf removal, then bless all). Consult the `appmap-record`
-   skill for information about the `exclude` syntax, and/or check the language
-   reference at https://appmap.io/docs/reference/.
+   diff is only the leaf removal, then bless all). The `exclude` syntax for each
+   language, and the YAML quoting rule for method ids that contain `#`, are in
+   **appmap-config**, "Cutting noise".
 2. **Prefer a minimal fixture** for a new entry — build the minimal object graph
    the behavior needs (tens of events) instead of a heavyweight end-to-end setup.
 

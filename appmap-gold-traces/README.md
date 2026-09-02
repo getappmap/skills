@@ -55,7 +55,7 @@ the bless.
 - **appmap-review** owns the *interpretation* — one agent, one pass.
 
 Labels are one pipeline across the skills: the review *suggests* labels on
-changed-but-unlabeled functions → **appmap-label** *applies* them → archive *bakes them
+changed-but-unlabeled functions → **appmap-config** *applies* them → archive *bakes them
 into `sequence.json`* → the next review *reads them* for severity.
 
 ## The review recipe

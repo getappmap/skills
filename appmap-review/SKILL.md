@@ -171,27 +171,11 @@ especially a security-sensitive path with no *negative* test. For each gap, emit
 command to record the missing test.
 
 **3 — Suggested Labels.** For functions that **changed in the compare but carry no
-label**, suggest one from the taxonomy so the next review can interpret them (apply
-them via **appmap-label**). Primary-language application code only. → per label:
-`label` (from taxonomy), `file`, `line`, `description` (why). Taxonomy:
-
-- `access.public` — request allows public access (no auth/authz); controller methods, not ordinary functions.
-- `audit` — writes a permanent audit record of application activity.
-- `command.perform` — invocation of a command-line command or script.
-- `crypto.encrypt` / `crypto.decrypt` / `crypto.digest` / `crypto.set_auth_data` — encryption / decryption / cryptographic hash / sets authenticated data.
-- `dao.materialize` — loads data-access objects from the DB into memory (framework/library code, not every load).
-- `deserialize.safe` / `deserialize.unsafe` / `deserialize.sanitize` — deserialization that is safe / not guaranteed safe / makes data safe-or-fails.
-- `http.session.clear` — clears the HTTP session (any prior session id becomes invalid).
-- `job.create` / `job.perform` / `job.cancel` — schedules / runs / cancels a background job.
-- `log` — writes to the application log (framework/library code).
-- `rpc.circuit_breaker` — circuit-breaker function, expected under an RPC client request.
-- `secret` — returns a secret (password, key, auth token); PII does *not* count.
-- `security.authentication` — verifies a user's identity.
-- `security.authorization` — tests whether a user is authorized to perform an action.
-- `security.logout` — logs a user out.
-- `string.equals` — compares two strings for equality.
-- `system.exec` / `system.exec.safe` / `system.exec.sanitize` — runs an OS command / known-safe / makes input safe-or-fails.
-- Plus project-specific labels already in use (e.g. `security.join_code`).
+label**, suggest one so the next review can interpret them. Primary-language
+application code only. → per label: `label`, `file`, `line`, `description` (why).
+Take label names from the taxonomy in **appmap-config** ("Labels"), plus any
+project-specific labels already in use (e.g. `security.join_code`). The same skill
+has the syntax for applying them.
 
 **4 — Suggestions (three domain passes).** Each suggestion: `file`, `line`, `type`
 (bug | security | performance), `priority` (low | medium | high), `label` (a few

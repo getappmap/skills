@@ -14,23 +14,45 @@
 schema_version: 2
 
 commands:
-  # Command template that (re-)records ONE golden test, run via the shell from
-  # this file's parent directory (used by --record and discover). Placeholders:
-  #   {test_file}   the test file to run
-  #   {test_name}   the test function/case name
-  # The command names only the test — it cannot choose where the recording file
-  # lands; the recorder decides that, under appmap_dir.
-  # Pick the line for your stack and delete the rest (these are examples):
+  # Name the test framework and the engine builds the record command itself. It
+  # knows how each framework names one test and how it names several, so the
+  # whole gold set is recorded in as few runs as the framework allows.
   #
-  #   pytest (appmap-python):
-  #     record: ".venv/bin/appmap-python pytest {test_file}::{test_name} -q"
-  #   minitest / Ruby (appmap-ruby):
-  #     record: "bundle exec ruby -Itest {test_file} -n {test_name}"
-  #   rspec (appmap-ruby):
-  #     record: "APPMAP=true bundle exec rspec {test_file} -e {test_name}"
-  #   jest (appmap-node):
-  #     record: "npx appmap-node npx jest {test_file} -t {test_name}"
-  record: ".venv/bin/appmap-python pytest {test_file}::{test_name} -q"
+  #   framework   pytest | unittest | rspec | minitest | rails-test |
+  #               jest | vitest | mocha | maven | gradle
+  #   runner      optional; replaces the default launcher (the part before the
+  #               test selectors). Set it when the project needs a virtualenv
+  #               path, a wrapper script, a Maven profile, a workspace flag, ...
+  #   args        optional; flags appended after the test selectors.
+  #
+  # Defaults and what test_name means for each framework: run
+  #   node "<skill>/assets/manage.mjs" --help
+  # and preview the exact commands for this manifest with
+  #   node "<skill>/assets/manage.mjs" plan --dir gold_traces
+  #
+  # Examples (pick one, delete the rest):
+  #
+  #   framework: pytest
+  #   runner: .venv/bin/appmap-python pytest
+  #   args: -q
+  #
+  #   framework: rspec
+  #
+  #   framework: jest
+  #   runner: npx appmap-node yarn jest
+  #
+  #   framework: maven
+  #   runner: ./mvnw -Pintegration com.appland:appmap-maven-plugin:prepare-agent test
+  framework: pytest
+  runner: .venv/bin/appmap-python pytest
+  args: -q
+
+  # For a runner the engine does not know, give a full shell template instead of
+  # `framework`. It is run once per test with {test_file} and {test_name}
+  # substituted, and it cannot choose where the recording lands — the recorder
+  # decides that, under appmap_dir. `framework` and `record` are exclusive.
+  #
+  #   record: "APPMAP=true bundle exec cucumber {test_file} --name {test_name}"
 
   # Extra environment variables for the record command (optional).
   record_env:
@@ -38,7 +60,7 @@ commands:
 
   # The AppMap CLI the engine runs. Leave this UNSET to
   # auto-discover the binary — the IDE extensions' ~/.appmap/bin/appmap if present,
-  # otherwise `appmap` on PATH (the usual CI setup). Set it only in unusual cases to 
+  # otherwise `appmap` on PATH (the usual CI setup). Set it only in unusual cases to
   # override, e.g. a path to a specific, custom build of the CLI.
   # appmap_cli: appmap
 
@@ -51,9 +73,10 @@ commands:
 
 # The curated recordings that form the behavior baseline. Each entry:
 #   feature      functional area name (used to group entries)
-#   test_file    the test that produces the recording (as the record command
-#                needs it — relative to this file's parent dir, where it runs)
-#   test_name    the test function/case name
+#   test_file    the test file, relative to this file's parent dir (where the
+#                record command runs)
+#   test_name    the test to run, in the form the framework expects — see
+#                `manage.mjs --help` for what each framework wants here
 #   appmap_path  recording path relative to the project's appmap_dir — get it
 #                from the engine's `discover` command; don't guess it
 #   summary      short human context for what the trace demonstrates

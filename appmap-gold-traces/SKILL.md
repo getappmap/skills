@@ -125,6 +125,8 @@ project and is committed there.
 <skill>/assets/
   manage.mjs                          engine (config-driven, zero-install Node)
   manage.test.mjs                     engine tests (node --test, no deps)
+  frameworks.mjs                      test-framework registry: per-framework test selectors and batching
+  frameworks.test.mjs                 registry tests
   manifest.template.yaml              manifest template (commands + entries)
 
 <project>/gold_traces/                 created at bootstrap, committed in the project
@@ -182,19 +184,36 @@ When `gold_traces/` does not yet exist:
    working dir). Ensure `.appmap/` is gitignored — most AppMap projects already ignore
    it; add `.appmap/` to the repo `.gitignore` if not.
 
-2. **Fill in the `commands`.** Determine the project's record command yourself by
-   inspecting the project. Lean heavily on the `appmap-record` skill to create sample
-   recordings for the project. You can also check the project's README and/or LLM instruction
-   files. Figure out the the test runner and how it's invoked (`package.json`
-   scripts, `Makefile`, `pytest.ini`/`tox.ini`, `Gemfile`/`Rakefile`, CI workflows),
-   the AppMap recorder integration for that stack, and any flags or options that the recorder
-   needs. Write it into `manifest.yaml`'s `commands` block —
-   after this it's the source of truth and you never re-derive it. Paths are derived,
-   not configured (see **Config reference**). The record command MUST include the
-   `{test_file}` and `{test_name}` tokens so it records one **specific** test rather
-   than running the whole suite. The command cannot choose where the recording file
-   lands — the recorder decides that, under `appmap_dir`. Don't add output-path
-   flags; record, then find the file with `discover` (step 3).
+2. **Fill in the `commands`.** Name the test framework and, if the default
+   launcher is not right for this project, the launcher:
+   ```yaml
+   commands:
+     framework: pytest                          # pytest | unittest | rspec | minitest | rails-test |
+                                                # jest | vitest | mocha | maven | gradle
+     runner: .venv/bin/appmap-python pytest     # optional: replaces the default launcher
+     args: -q                                   # optional: flags after the test selectors
+   ```
+   The engine knows how each framework names one test and how it names several,
+   so it records the whole gold set in as few runs as the framework allows. `node
+   "<skill>/assets/manage.mjs" --help` lists the frameworks, each one's default
+   launcher, and what `test_name` must be for it. Find the launcher by inspecting
+   the project: lean on the `appmap-record` skill to make a sample recording, and
+   check the README, LLM instruction files, `package.json` scripts, `Makefile`,
+   `pytest.ini`/`tox.ini`, `Gemfile`/`Rakefile`, and CI workflows for the wrapper
+   script, virtualenv path, profile, or workspace flag the project needs. Then
+   run `plan --dir gold_traces` to see the exact commands before recording
+   anything. Once written, the `commands` block is the source of truth; never
+   re-derive it.
+
+   For a runner the engine does not know, give a full shell template as
+   `commands.record` instead of `framework`. It runs once per test and MUST
+   include the `{test_file}` and `{test_name}` tokens so it records one
+   **specific** test rather than the whole suite.
+
+   Either way the command cannot choose where the recording file lands — the
+   recorder decides that, under `appmap_dir`. Don't add output-path flags;
+   record, then find the file with `discover` (step 3). Paths are derived, not
+   configured (see **Config reference**).
 
 3. **Curate the entries.** Replace the template entry with real `entries`,
    according to the guidance provided in the section **What makes a trace suitable**.
@@ -302,8 +321,11 @@ coverage expectations and changing `schema_version` to `2`.
 
 | Field | Meaning |
 |---|---|
-| `commands.record` | Shell template to record ONE test, run from the gold_traces parent dir. Placeholders `{test_file}`, `{test_name}` are substituted per run. Needed for `--record` and `discover`. |
-| `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). |
+| `commands.framework` | The test framework: `pytest`, `unittest`, `rspec`, `minitest`, `rails-test`, `jest`, `vitest`, `mocha`, `maven`, or `gradle`. The engine builds the record commands from its registry (`assets/frameworks.mjs`) and batches the gold set into as few runs as the framework allows. Preferred whenever the project's runner is one of these. Exclusive with `commands.record`. |
+| `commands.runner` *(optional)* | Replaces the framework's default launcher, the part of the command before the test selectors (for example `.venv/bin/appmap-python pytest`, `npx appmap-node yarn jest`, `./mvnw -Pintegration test`). |
+| `commands.args` *(optional)* | Flags appended after the test selectors (for example `-q`). |
+| `commands.record` | For a runner the registry does not know: a shell template to record ONE test, run from the gold_traces parent dir with `{test_file}` and `{test_name}` substituted, once per entry. Exclusive with `commands.framework`. |
+| `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). Merged over the framework's own defaults, such as `APPMAP=true` for rspec and minitest. |
 | `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each recording before it is committed (`sanitize` needs **`@appland/appmap` ≥ 3.201.0**). **Leave unset**: it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. A committed value is machine-specific config in a shared file (breaks on other machines/platforms); set it only for an unusual CLI location or a custom-compiled CLI (appmap-js itself sets `node built/cli.js`). |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
 | `allow_values` *(optional)* | Values `appmap sanitize` keeps verbatim in blessed baselines (the engine passes them via `--allow-file`), exact whole-value match. Curate small public vocabularies only (enum state/role names); never anything that could identify a person or authenticate a request. |
@@ -355,8 +377,9 @@ with no code change, fix the test before blessing it.
 
 ## Engine commands
 
-The engine has three commands — `check` (shape, coverage, and stability), `update`
-(record + digest-gated bless), and `discover` (find a new entry's `appmap_path`).
+The engine has four commands — `check` (shape, coverage, and stability), `update`
+(record + digest-gated bless), `discover` (find a new entry's `appmap_path`), and
+`plan` (show the record commands without running them).
 Diffing and reviewing a change is the
 **appmap-review** skill's job.
 
@@ -364,7 +387,16 @@ Diffing and reviewing a change is the
 update    [--dir DIR] [--only TEST] [--record] [--dry-run]
 check     [--dir DIR] [--only TEST] [--record]
 discover  [--dir DIR] --test-file FILE --test-name NAME
+plan      [--dir DIR] [--only TEST]
 ```
+
+Recording, in every command that records, follows `commands.framework`: the
+selected entries are grouped into as few runner invocations as the framework's
+command line allows (one `pytest` run for the whole set; one `jest` run with the
+files and a name filter; one `mvn` run with a `-Dtest=` list; one run per file
+for minitest). Each agent still writes one recording per test, so entries keep
+their own `appmap_path`. With `commands.record` instead, each entry is recorded
+in its own run. Frameworks and their default launchers: `manage.mjs --help`.
 
 `check`:
 
@@ -382,15 +414,23 @@ discover  [--dir DIR] --test-file FILE --test-name NAME
 - Re-blesses each baseline whose behavior changed (copies the fresh recording over
   it) and **seeds** a baseline for any entry that lacks one. A trace whose behavioral
   digest matches its baseline is left **byte-identical** — no git churn.
-- `--record` re-records each selected test first (needs `commands.record`).
+- `--record` re-records the selected tests first (needs `commands.framework` or
+  `commands.record`).
 - `--dry-run` reports what would be blessed/seeded without writing.
 - `--only TEST` (repeatable) limits the run to named entries.
 
 `discover`:
 
-- Records the one test via `commands.record` and reports every appmap file the run
-  produced — paths relative to `appmap_dir`, i.e. the entry's `appmap_path` — plus a
-  paste-ready entry stub. This is **the** way to determine an `appmap_path`; never
-  derive one by hand.
+- Records the one test through the configured framework or template and reports
+  every appmap file the run produced — paths relative to `appmap_dir`, i.e. the
+  entry's `appmap_path` — plus a paste-ready entry stub. This is **the** way to
+  determine an `appmap_path`; never derive one by hand.
 - Prints the same size/shape assessment for every candidate so empty or noisy
   recordings are visible before they enter the manifest.
+
+`plan`:
+
+- Prints the record command(s) the engine would run for the selected entries,
+  and which entries each run covers. Use it after filling in `commands` to
+  confirm the launcher and the test selectors before recording, and whenever a
+  recording run fails, to see the exact command to reproduce by hand.

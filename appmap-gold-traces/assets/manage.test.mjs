@@ -29,7 +29,13 @@ const MANAGE = fileURLToPath(new URL('./manage.mjs', import.meta.url));
 //   one_recording   -> pytest/one_recording.appmap.json (+ a non-appmap noise file)
 //   two_recordings  -> pytest/a.appmap.json + requests/b.appmap.json
 //   no_recording    -> writes nothing
-function makeFixture(t, { entries = '' } = {}) {
+// With `commands`, the manifest's commands block is replaced. The batch stub
+// (`batch-recorder.mjs`) stands in for a pytest launcher: it reads every
+// `file::name` selector on its command line and writes one recording per name,
+// the way a real runner records each test of a batch separately. It also
+// records how many times it was launched (launches.log), so a test can prove
+// the engine batched.
+function makeFixture(t, { entries = '', commands = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-traces-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -47,16 +53,46 @@ else if (name === 'no_recording') { /* records nothing */ }
 else { write('pytest/' + name + '.appmap.json'); fs.writeFileSync('tmp/appmap/noise.log', 'not an appmap'); }
 `,
   );
+  fs.writeFileSync(
+    path.join(dir, 'batch-recorder.mjs'),
+    `import fs from 'node:fs';
+fs.appendFileSync('launches.log', process.argv.slice(2).join(' ') + '\\n');
+fs.mkdirSync('tmp/appmap/pytest', { recursive: true });
+for (const arg of process.argv.slice(2)) {
+  const match = /^(.+)::(.+)$/.exec(arg);
+  if (!match || match[2] === 'no_recording') continue;
+  fs.writeFileSync('tmp/appmap/pytest/' + match[2] + '.appmap.json',
+    JSON.stringify({ events: [{ event: 'call', defined_class: 'App', method_id: match[2] }], stamp: Date.now(), pad: Math.random() }));
+}
+`,
+  );
+  // A stand-in for the AppMap CLI so the seed path (which sanitizes) runs without
+  // the real binary: `sanitize` is a no-op that exits 0.
+  fs.writeFileSync(path.join(dir, 'fake-cli.mjs'), `process.exit(process.argv[2] === 'sanitize' ? 0 : 1);\n`);
   fs.mkdirSync(path.join(dir, 'gold_traces/baseline/appmaps'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'gold_traces/manifest.yaml'),
     `schema_version: 1
 commands:
-  record: 'node "{test_file}" {test_name}'
+${commands ?? `  record: 'node "{test_file}" {test_name}'`}
 entries:
 ${entries}`,
   );
   return dir;
+}
+
+const BATCH_COMMANDS = `  framework: pytest
+  runner: node batch-recorder.mjs
+  args: --quiet
+  appmap_cli: node fake-cli.mjs`;
+
+function batchEntry(name) {
+  return `  - feature: demo
+    test_file: tests/test_demo.py
+    test_name: ${name}
+    appmap_path: pytest/${name}.appmap.json
+    summary: ${name}
+`;
 }
 
 function runEngine(cwd, ...args) {
@@ -152,6 +188,81 @@ test('update --record: refuses to seed an empty recording', (t) => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /contains zero events/);
   assert.match(result.stderr, /contains no function, HTTP, or SQL calls/);
+});
+
+// --- framework-driven recording (end-to-end against the batch stub) ----------
+
+test('framework: plan prints one batched command for all entries', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS, entries: batchEntry('alpha') + batchEntry('beta') });
+  const result = runEngine(dir, 'plan', '--dir', 'gold_traces');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /1 record run\(s\) for 2 entries via framework pytest/);
+  assert.match(result.stdout, /node batch-recorder\.mjs tests\/test_demo\.py::alpha tests\/test_demo\.py::beta --quiet/);
+  assert.match(result.stdout, /- alpha\n\s+- beta/);
+});
+
+test('framework: update --record launches the runner once for the whole gold set', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS, entries: batchEntry('alpha') + batchEntry('beta') });
+  const result = runEngine(dir, 'update', '--dir', 'gold_traces', '--record', '--dry-run');
+  // Seeding stops before sanitize (needs the real CLI): both entries reach the seed step.
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /seed\s+alpha/);
+  assert.match(result.stdout, /seed\s+beta/);
+  const launches = fs.readFileSync(path.join(dir, 'launches.log'), 'utf8').trim().split('\n');
+  assert.equal(launches.length, 1, launches.join('\n'));
+  assert.equal(launches[0], 'tests/test_demo.py::alpha tests/test_demo.py::beta --quiet');
+});
+
+test('framework: --only records just the named entries', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS, entries: batchEntry('alpha') + batchEntry('beta') });
+  const result = runEngine(dir, 'update', '--dir', 'gold_traces', '--record', '--dry-run', '--only', 'beta');
+  assert.equal(result.status, 0, result.stderr);
+  const launches = fs.readFileSync(path.join(dir, 'launches.log'), 'utf8').trim();
+  assert.equal(launches, 'tests/test_demo.py::beta --quiet');
+});
+
+test('framework: a wrong appmap_path in a batch reports every file the batch produced', (t) => {
+  const dir = makeFixture(t, {
+    commands: BATCH_COMMANDS,
+    entries: batchEntry('alpha') + `  - feature: demo
+    test_file: tests/test_demo.py
+    test_name: beta
+    appmap_path: pytest/wrong.appmap.json
+    summary: wrong on purpose
+`,
+  });
+  const result = runEngine(dir, 'update', '--dir', 'gold_traces', '--record', '--dry-run');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /beta: missing/);
+  assert.match(result.stderr, /The record step produced: pytest\/alpha\.appmap\.json, pytest\/beta\.appmap\.json/);
+});
+
+test('framework: discover records the one test through the framework runner', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS });
+  const result = runEngine(dir, 'discover', '--dir', 'gold_traces', '--test-file', 'tests/test_demo.py', '--test-name', 'gamma');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /appmap_path: pytest\/gamma\.appmap\.json/);
+});
+
+test('framework: an unknown name, or framework together with record, is rejected', (t) => {
+  const unknown = makeFixture(t, { commands: '  framework: nose' });
+  const result = runEngine(unknown, 'plan', '--dir', 'gold_traces');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unknown commands.framework 'nose'/);
+  assert.match(result.stderr, /Supported: pytest, unittest, rspec/);
+
+  const both = makeFixture(t, { commands: `  framework: pytest\n  record: 'pytest {test_file}::{test_name}'` });
+  const conflict = runEngine(both, 'plan', '--dir', 'gold_traces');
+  assert.equal(conflict.status, 1);
+  assert.match(conflict.stderr, /Set one of 'commands.framework' or 'commands.record'/);
+});
+
+test('plan: a record template lists one run per entry', (t) => {
+  const dir = makeFixture(t, { entries: batchEntry('alpha') + batchEntry('beta') });
+  const result = runEngine(dir, 'plan', '--dir', 'gold_traces');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /2 record run\(s\) for 2 entries via commands.record template/);
+  assert.match(result.stdout, /node "tests\/test_demo\.py" alpha/);
 });
 
 // --- suitability assessment ------------------------------------------------

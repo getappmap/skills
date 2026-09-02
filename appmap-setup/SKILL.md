@@ -82,10 +82,15 @@ Write `docs/appmap.md`. It is loaded into every session through CLAUDE.md, so
 keep it under one screen. It holds:
 
 - Where the tools live (`~/.appmap/bin/appmap`, and the agent jar for Java).
-- One record command per test suite, unit and integration, using the same
-  placeholders the gold-traces manifest uses, `{test_file}` and `{test_name}`,
-  so a line can later be pasted into `commands.record` unchanged. List any
-  environment variables the command needs next to it.
+- One record command per test suite, unit and integration, written the way
+  the gold-traces manifest wants it: the framework name (`pytest`, `rspec`,
+  `jest`, `maven`, ...) and the launcher that runs it in this repo (the
+  virtualenv path, wrapper script, profile, or workspace flag), so the pair can
+  later be pasted into the manifest's `commands.framework` and
+  `commands.runner` unchanged. For a runner the gold-traces engine does not
+  know, give a full command with the `{test_file}` and `{test_name}`
+  placeholders instead, for `commands.record`. List any environment variables
+  the command needs next to it.
 - Where recordings land (`tmp/appmap/<framework>/`).
 - What `appmap.yml` excludes and why, in one line per exclusion.
 - A pointer to `gold_traces/manifest.yaml`, once it exists.

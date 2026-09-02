@@ -73,8 +73,9 @@ engine's `discover` for every `appmap_path`, and give each entry an `expect`
 list of the code objects it must execute. Run `check --record`; it records
 twice, fails on empty traces, missing `expect` coverage, or run-to-run drift,
 and warns on large or repetitive traces. Then seed with `update`. Base the
-manifest's `commands.record` on the record command in `docs/appmap.md`; it
-uses the same placeholders, so paste it unchanged. Commit.
+manifest's `commands` on `docs/appmap.md`: its framework name and launcher go
+into `commands.framework` and `commands.runner` unchanged, and `plan` shows the
+resulting record commands before anything runs. Commit.
 
 ## Phase 4 — Replay onto HEAD
 

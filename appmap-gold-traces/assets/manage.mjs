@@ -40,6 +40,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
+import { describeFrameworks, frameworkNames, getFramework, planRecordCommands } from './frameworks.mjs';
+
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
   if (!command || options.help) {
@@ -93,9 +95,14 @@ async function main() {
     await checkBaselines(env, entries, options);
     return;
   }
+  if (command === 'plan') {
+    printRecordPlan(env, entries);
+    return;
+  }
   throw new Error(
     `Unknown command: ${command}. This engine maintains baselines ('update'), checks ` +
-      `trace suitability ('check'), and finds a test's appmap_path ('discover'). ` +
+      `trace suitability ('check'), finds a test's appmap_path ('discover'), and ` +
+      `shows the record commands it would run ('plan'). ` +
       `To diff/review a change, use the ` +
       `appmap-review skill.`,
   );
@@ -165,6 +172,7 @@ function printHelp() {
   node <skill>/assets/manage.mjs update   [--dir DIR] [--only TEST] [--record] [--dry-run]
   node <skill>/assets/manage.mjs check    [--dir DIR] [--only TEST] [--record]
   node <skill>/assets/manage.mjs discover [--dir DIR] --test-file FILE --test-name NAME
+  node <skill>/assets/manage.mjs plan     [--dir DIR] [--only TEST]
 
 Maintains the committed gold-trace baselines. Diffing/reviewing a change is the
 appmap-review skill's job, not this engine's.
@@ -176,16 +184,28 @@ appmap-review skill's job, not this engine's.
             With --record, record twice and fail if the behavioral digest drifts.
   discover  Find a test's appmap_path for a new manifest entry: records the one
             test, checks each recording's shape, and reports which appmap files
-            the run produced, plus a paste-ready entry stub. Needs commands.record.
+            the run produced, plus a paste-ready entry stub.
+  plan      Print the record command(s) the engine would run for the entries,
+            without running them.
 
 Options:
   --dir DIR           Managed gold-traces directory, relative to the project root (default: gold_traces).
-  --only TEST         update/check: limit to the named test (repeatable).
+  --only TEST         update/check/plan: limit to the named test (repeatable).
   --record            update: record before updating. check: record twice and verify stability.
   --dry-run           update: report what would be blessed/seeded without writing anything.
-  --test-file FILE    discover: the test file, as commands.record needs it.
+  --test-file FILE    discover: the test file, as the record command needs it.
   --test-name NAME    discover: the test function/case name.
   --help              Show this help.
+
+Recording is configured in manifest.yaml under 'commands', one of two ways:
+
+  framework: NAME     The engine knows how NAME names tests on its command line and
+                      records the whole gold set in as few runs as NAME allows.
+                      Optional 'runner' replaces the default launcher and 'args'
+                      appends flags. Supported frameworks:
+${describeFrameworks()}
+  record: TEMPLATE    A full shell template with {test_file} and {test_name}, run
+                      once per test. Use it for a runner the registry does not know.
 `);
 }
 
@@ -211,8 +231,23 @@ async function loadManifest(manifestPath) {
   if (!Array.isArray(entries)) {
     throw new Error(`'entries' must be a list: ${manifestPath}`);
   }
+  const framework = commands.framework == null ? null : String(commands.framework);
+  const record = commands.record == null ? null : String(commands.record);
+  if (framework && record) {
+    throw new Error(`Set one of 'commands.framework' or 'commands.record' in ${manifestPath}, not both.`);
+  }
+  if (framework && !frameworkNames().includes(framework)) {
+    throw new Error(`Unknown commands.framework '${framework}' in ${manifestPath}. Supported: ${frameworkNames().join(', ')}.`);
+  }
   return {
-    record: commands.record ?? null,
+    // Two ways to record. `framework` names a runner the engine knows (see
+    // frameworks.mjs), so the manifest carries only the launcher and flags and the
+    // engine batches tests per run. `record` is a full per-test shell template for
+    // a runner the registry does not know.
+    framework,
+    runner: commands.runner == null ? null : String(commands.runner),
+    args: commands.args == null ? null : String(commands.args),
+    record,
     record_env: stringifyEnv(commands.record_env ?? {}),
     appmap_cli: commands.appmap_cli ?? defaultAppmapCli(),
     // Optional per-run expand list: package code-object ids rendered at function
@@ -366,9 +401,7 @@ async function checkBaselines(env, entries, options) {
     return;
   }
 
-  if (!env.config.record) {
-    throw new Error(`check --record requires 'commands.record' in ${env.manifestPath}`);
-  }
+  requireRecordConfig(env, 'check --record');
   const first = await recordCheckPass(env, entries, 'check-first', true);
   const second = await recordCheckPass(env, entries, 'check-second', false);
   const unstable = entries.filter((entry) => first.get(entryKey(entry)) !== second.get(entryKey(entry)));
@@ -405,29 +438,69 @@ async function recordCheckPass(env, entries, sequenceName, printDetails) {
   return digests;
 }
 
+// Record the entries, one runner invocation per plan group (see recordPlan). Each
+// entry is mapped to the appmap files its group's run produced; with a batch of
+// several tests that list covers the whole group, which is still enough to confirm
+// the entry's own appmap_path is among them and to hint at the right path when not.
 async function rerecordEntries(env, entries) {
-  if (!env.config.record) {
-    throw new Error(`--record requires 'commands.record' in ${env.manifestPath}`);
-  }
+  requireRecordConfig(env, '--record');
   const produced = new Map();
-  for (const entry of entries) {
-    const appmapOutput = currentAppMapPath(env, entry);
-    await fs.rm(appmapOutput, { force: true });
+  for (const group of recordPlan(env, entries)) {
+    for (const entry of group.entries) {
+      if (entry.appmap_path) await fs.rm(currentAppMapPath(env, entry), { force: true });
+    }
     const before = await snapshotAppmaps(env.appmapsDir);
-    runRecordCommand(env, entry.test_file, entry.test_name);
-    produced.set(entryKey(entry), changedAppmaps(before, await snapshotAppmaps(env.appmapsDir)));
+    runRecordGroup(env, group);
+    const changed = changedAppmaps(before, await snapshotAppmaps(env.appmapsDir));
+    for (const entry of group.entries) {
+      produced.set(entryKey(entry), changed);
+    }
   }
   return produced;
 }
 
-function runRecordCommand(env, testFile, testName) {
-  // The record command names only the test to run ({test_file}/{test_name}); the
-  // recorder alone decides where the recording file lands under appmap_dir.
-  const command = substitute(env.config.record, { test_file: testFile, test_name: testName });
-  runShell(command, {
+function requireRecordConfig(env, what) {
+  if (!env.config.record && !env.config.framework) {
+    throw new Error(`${what} requires 'commands.framework' or 'commands.record' in ${env.manifestPath}`);
+  }
+}
+
+// The commands that record a set of entries: one per entry for a `record` template,
+// or as few as the framework's selector grammar allows for a `framework`. Either way
+// the command names only the tests to run; the recorder alone decides where each
+// recording file lands under appmap_dir.
+function recordPlan(env, entries) {
+  const { config } = env;
+  if (config.record) {
+    return entries.map((entry) => ({
+      entries: [entry],
+      command: substitute(config.record, { test_file: entry.test_file, test_name: entry.test_name }),
+      env: {},
+    }));
+  }
+  return planRecordCommands(config, entries);
+}
+
+function runRecordGroup(env, group) {
+  runShell(group.command, {
     cwd: env.workingDir,
-    env: { ...process.env, ...env.config.record_env },
+    env: { ...process.env, ...group.env, ...env.config.record_env },
   });
+}
+
+function printRecordPlan(env, entries) {
+  requireRecordConfig(env, 'plan');
+  const groups = recordPlan(env, entries);
+  const how = env.config.framework
+    ? `framework ${env.config.framework} (runner: ${env.config.runner ?? getFramework(env.config.framework).runner})`
+    : 'commands.record template, one run per test';
+  console.log(`${groups.length} record run(s) for ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} via ${how}, from ${env.workingDir}:`);
+  for (const group of groups) {
+    console.log(`\n  ${group.command}`);
+    for (const entry of group.entries) {
+      console.log(`    - ${entry.test_name}`);
+    }
+  }
 }
 
 function entryKey(entry) {
@@ -446,11 +519,11 @@ async function discoverAppmapPath(env, options) {
   if (!options.testFile || !options.testName) {
     throw new Error(`discover requires --test-file and --test-name`);
   }
-  if (!env.config.record) {
-    throw new Error(`discover requires 'commands.record' in ${env.manifestPath}`);
-  }
+  requireRecordConfig(env, 'discover');
   const before = await snapshotAppmaps(env.appmapsDir);
-  runRecordCommand(env, options.testFile, options.testName);
+  for (const group of recordPlan(env, [{ test_file: options.testFile, test_name: options.testName }])) {
+    runRecordGroup(env, group);
+  }
   const candidates = changedAppmaps(before, await snapshotAppmaps(env.appmapsDir));
   if (candidates.length === 0) {
     throw new Error(

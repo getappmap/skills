@@ -192,7 +192,10 @@ prior form; skip style/refactor/docs/test suggestions unless the improvement is 
   `SELECT *`; missing audit on sensitive ops; no prepared statements; missing
   validation on filter/sort params; NULL/type mishandling; second-order injection;
   multiple statements per query; outdated drivers; uncontrolled metadata access
-  (`information_schema`); poor batch error handling.
+  (`information_schema`); poor batch error handling. Also use the recorded SQL to
+  confirm what a performance fix claims: a LIMIT pushed down into the database
+  shows up in the query text (for example `fetch next ? rows only`), and a fix
+  whose query text did not change did not do what its commit message says.
 - **4c HTTP** — request-handling only; read changed server/client request nodes.
   Check for: missing input validation; weak/absent auth; insecure transport (HTTP not
   HTTPS); poor session management; missing content-type checks; insufficient CSRF

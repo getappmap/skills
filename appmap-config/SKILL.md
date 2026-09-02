@@ -67,6 +67,17 @@ A recording gets big when one small function runs thousands of times. The fix
 is `exclude:`, which removes named code from the recording while its callers
 stay in it.
 
+Measure before excluding. The AppMap CLI lists the most-called functions and
+how much of the file they account for:
+
+```sh
+~/.appmap/bin/appmap stats --appmap-file tmp/appmap/<framework>/<test>.appmap.json --limit 20
+```
+
+Aim for well under 1 MB per recording. Excluding one or two leaves usually
+shrinks a recording 5-10x. After excluding, re-record and check that the
+callers of the excluded function still appear.
+
 Good candidates to exclude:
 
 - generated code: schema classes, protobuf messages, builders

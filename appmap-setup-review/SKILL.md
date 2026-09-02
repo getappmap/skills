@@ -31,7 +31,7 @@ scratch directory and run their engine and instructions from there.
 ```
 Phase 0  environment checks
 Phase 1  choose BASE and HEAD
-Phase 2  on BASE: run appmap-setup           -> its commits: config, commands doc, exclusions
+Phase 2  on BASE: run appmap-setup           -> its commits: config, exclusions, docs
 Phase 3  on BASE: seed gold traces           -> commit "gold baseline"
 Phase 4  replay those four commits onto HEAD
 Phase 5  on HEAD: update gold traces         -> commit "gold update"
@@ -59,9 +59,9 @@ git checkout -b appmap-base <BASE_SHA>
 ## Phase 2 — Recording setup on BASE
 
 Run **appmap-setup** on the checked-out BASE branch. It leaves behind three
-commits, which it names "config", "commands doc", and "exclusions", plus a
-repo-local skill with the working build and test commands. Note the three
-commit SHAs; the replay phase cherry-picks them.
+commits, which it names "config", "exclusions", and "docs". The docs commit
+holds `docs/appmap.md` with the working record commands, imported from
+`CLAUDE.md`. Note the three commit SHAs; the replay phase cherry-picks them.
 
 ## Phase 3 — Gold traces on BASE (commit "gold baseline")
 
@@ -73,18 +73,21 @@ engine's `discover` for every `appmap_path`, and give each entry an `expect`
 list of the code objects it must execute. Run `check --record`; it records
 twice, fails on empty traces, missing `expect` coverage, or run-to-run drift,
 and warns on large or repetitive traces. Then seed with `update`. Base the
-manifest's record command on the commands doc appmap-setup wrote. Commit.
+manifest's `commands.record` on the record command in `docs/appmap.md`; it
+uses the same placeholders, so paste it unchanged. Commit.
 
 ## Phase 4 — Replay onto HEAD
 
 ```sh
 git checkout -b appmap-head <HEAD_SHA>
 git cherry-pick <config>          # recording config
-git cherry-pick <exclusions>      # expect a modify/delete conflict on the
-                                  # commands doc - keep the incoming full file
-git cherry-pick <commands doc>    # usually empty now -> git cherry-pick --skip
+git cherry-pick <exclusions>      # appmap.yml exclusions
+git cherry-pick <docs>            # docs/appmap.md + the CLAUDE.md import line
 git cherry-pick <gold baseline>   # needed for the review step
 ```
+
+The docs commit conflicts if `CLAUDE.md` changed between BASE and HEAD. Keep
+HEAD's content and re-add the `@docs/appmap.md` line.
 
 Verify recording still works at HEAD: re-run the unit recording and the
 integration recording, including any test the feature added.

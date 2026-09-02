@@ -324,6 +324,7 @@ coverage expectations and changing `schema_version` to `2`.
 | `commands.framework` | The test framework: `pytest`, `unittest`, `rspec`, `minitest`, `rails-test`, `jest`, `vitest`, `mocha`, `maven`, or `gradle`. The engine builds the record commands from its registry (`assets/frameworks.mjs`) and batches the gold set into as few runs as the framework allows. Preferred whenever the project's runner is one of these. Exclusive with `commands.record`. |
 | `commands.runner` *(optional)* | Replaces the framework's default launcher, the part of the command before the test selectors (for example `.venv/bin/appmap-python pytest`, `npx appmap-node yarn jest`, `./mvnw -Pintegration test`). |
 | `commands.args` *(optional)* | Flags appended after the test selectors (for example `-q`). |
+| `commands.batch_size` *(optional)* | Most tests that may share one run. Unset means as many as the framework and the shell allow. Set it to keep runs small on purpose, for example to isolate a flaky test. Command length is limited separately and automatically: the engine measures this machine's shell limit (`ARG_MAX` minus the environment on POSIX, the 8 KB line on Windows) and splits any run that would exceed it. |
 | `commands.record` | For a runner the registry does not know: a shell template to record ONE test, run from the gold_traces parent dir with `{test_file}` and `{test_name}` substituted, once per entry. Exclusive with `commands.framework`. |
 | `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). Merged over the framework's own defaults, such as `APPMAP=true` for rspec and minitest. |
 | `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each recording before it is committed (`sanitize` needs **`@appland/appmap` ≥ 3.201.0**). **Leave unset**: it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. A committed value is machine-specific config in a shared file (breaks on other machines/platforms); set it only for an unusual CLI location or a custom-compiled CLI (appmap-js itself sets `node built/cli.js`). |
@@ -395,8 +396,12 @@ selected entries are grouped into as few runner invocations as the framework's
 command line allows (one `pytest` run for the whole set; one `jest` run with the
 files and a name filter; one `mvn` run with a `-Dtest=` list; one run per file
 for minitest). Each agent still writes one recording per test, so entries keep
-their own `appmap_path`. With `commands.record` instead, each entry is recorded
-in its own run. Frameworks and their default launchers: `manage.mjs --help`.
+their own `appmap_path`. A run that would exceed this machine's command-line
+limit is split in halves until every piece fits, so a large gold set works on
+Windows too, with more runs there than on Linux or macOS. `commands.batch_size`
+caps the count per run on top of that. With `commands.record` instead, each
+entry is recorded in its own run. Frameworks and their default launchers:
+`manage.mjs --help`.
 
 `check`:
 

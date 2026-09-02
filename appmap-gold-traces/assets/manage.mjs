@@ -239,6 +239,10 @@ async function loadManifest(manifestPath) {
   if (framework && !frameworkNames().includes(framework)) {
     throw new Error(`Unknown commands.framework '${framework}' in ${manifestPath}. Supported: ${frameworkNames().join(', ')}.`);
   }
+  const batchSize = commands.batch_size == null ? null : Number(commands.batch_size);
+  if (batchSize !== null && (!Number.isInteger(batchSize) || batchSize < 1)) {
+    throw new Error(`'commands.batch_size' must be a positive integer in ${manifestPath}.`);
+  }
   return {
     // Two ways to record. `framework` names a runner the engine knows (see
     // frameworks.mjs), so the manifest carries only the launcher and flags and the
@@ -247,6 +251,10 @@ async function loadManifest(manifestPath) {
     framework,
     runner: commands.runner == null ? null : String(commands.runner),
     args: commands.args == null ? null : String(commands.args),
+    // Optional cap on how many tests share one run. Command length is capped
+    // separately, by platform (see frameworks.mjs), so this is for smaller runs on
+    // purpose: isolating a flaky test, or a runner that is slow with a long list.
+    batch_size: batchSize,
     record,
     record_env: stringifyEnv(commands.record_env ?? {}),
     appmap_cli: commands.appmap_cli ?? defaultAppmapCli(),
@@ -478,7 +486,7 @@ function recordPlan(env, entries) {
       env: {},
     }));
   }
-  return planRecordCommands(config, entries);
+  return planRecordCommands(config, entries, { batchSize: config.batch_size });
 }
 
 function runRecordGroup(env, group) {

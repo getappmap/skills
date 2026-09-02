@@ -6,7 +6,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FRAMEWORKS, buildCommand, planRecordCommands, shellQuote, escapeRegex, frameworkNames } from './frameworks.mjs';
+import {
+  FRAMEWORKS, buildCommand, planRecordCommands, shellQuote, escapeRegex, frameworkNames, detectMaxCommandLength,
+} from './frameworks.mjs';
 
 const entry = (test_file, test_name) => ({ test_file, test_name });
 
@@ -52,6 +54,49 @@ test('buildCommand: runner override replaces the launcher, args are appended', (
 
 test('planRecordCommands: rejects an unknown framework by name', () => {
   assert.throws(() => planRecordCommands({ framework: 'nose' }, []), /Unknown commands.framework 'nose'/);
+});
+
+// --- batch limits: a count from the manifest, a length from the machine -------
+
+test('batch_size: caps how many entries share one run, in manifest order', () => {
+  const entries = ['a', 'b', 'c', 'd', 'e'].map((name) => entry('tests/test_x.py', name));
+  const groups = planRecordCommands({ framework: 'pytest' }, entries, { batchSize: 2 });
+  assert.deepEqual(groups.map((group) => group.entries.map((e) => e.test_name)), [['a', 'b'], ['c', 'd'], ['e']]);
+});
+
+test('command length: a group too long for the shell is halved until each piece fits', () => {
+  const entries = Array.from({ length: 8 }, (_, i) => entry('tests/test_x.py', `test_${i}`));
+  const full = planRecordCommands({ framework: 'pytest' }, entries)[0].command;
+  const groups = planRecordCommands({ framework: 'pytest' }, entries, { maxCommandLength: Math.floor(full.length / 3) });
+  assert.ok(groups.length >= 3, `${groups.length} runs`);
+  for (const group of groups) assert.ok(group.command.length <= Math.floor(full.length / 3), group.command);
+  assert.deepEqual(groups.flatMap((group) => group.entries), entries);
+});
+
+test('command length: a single entry is never split, even when it exceeds the limit', () => {
+  const groups = planRecordCommands({ framework: 'pytest' }, [entry('tests/test_x.py', 'test_long_name')], { maxCommandLength: 10 });
+  assert.equal(groups.length, 1);
+});
+
+test('command length: per-file frameworks split within a file, not across the plan', () => {
+  const entries = Array.from({ length: 6 }, (_, i) => entry('test/a_test.rb', `test_${i}`));
+  const groups = planRecordCommands({ framework: 'minitest' }, entries, { maxCommandLength: 60 });
+  assert.ok(groups.length > 1);
+  for (const group of groups) assert.match(group.command, /^bundle exec ruby -Itest test\/a_test\.rb -n /);
+});
+
+test('detectMaxCommandLength: Windows uses the cmd.exe line limit', () => {
+  const limit = detectMaxCommandLength('win32', {});
+  assert.ok(limit > 4096 && limit < 8191, String(limit));
+});
+
+test('detectMaxCommandLength: POSIX subtracts the environment; Linux also honors the single-argument cap', () => {
+  const linux = detectMaxCommandLength('linux', {});
+  assert.ok(linux > 4096 && linux <= 131072 - 4096, String(linux));
+  const darwin = detectMaxCommandLength('darwin', {});
+  const bigEnv = { PAYLOAD: 'x'.repeat(50_000) };
+  assert.ok(detectMaxCommandLength('darwin', bigEnv) < darwin, 'a larger environment leaves less room');
+  assert.ok(detectMaxCommandLength(process.platform) > 4096, 'this machine reports a usable limit');
 });
 
 // --- one selector per test, space-joined -------------------------------------

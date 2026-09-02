@@ -257,6 +257,28 @@ test('framework: an unknown name, or framework together with record, is rejected
   assert.match(conflict.stderr, /Set one of 'commands.framework' or 'commands.record'/);
 });
 
+test('framework: batch_size splits the gold set into several runs', (t) => {
+  const dir = makeFixture(t, {
+    commands: `${BATCH_COMMANDS}\n  batch_size: 2`,
+    entries: batchEntry('alpha') + batchEntry('beta') + batchEntry('gamma'),
+  });
+  const plan = runEngine(dir, 'plan', '--dir', 'gold_traces');
+  assert.equal(plan.status, 0, plan.stderr);
+  assert.match(plan.stdout, /2 record run\(s\) for 3 entries/);
+  const result = runEngine(dir, 'update', '--dir', 'gold_traces', '--record', '--dry-run');
+  assert.equal(result.status, 0, result.stderr);
+  const launches = fs.readFileSync(path.join(dir, 'launches.log'), 'utf8').trim().split('\n');
+  assert.deepEqual(launches, [
+    'tests/test_demo.py::alpha tests/test_demo.py::beta --quiet',
+    'tests/test_demo.py::gamma --quiet',
+  ]);
+
+  const bad = makeFixture(t, { commands: `${BATCH_COMMANDS}\n  batch_size: 0` });
+  const rejected = runEngine(bad, 'plan', '--dir', 'gold_traces');
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /batch_size' must be a positive integer/);
+});
+
 test('plan: a record template lists one run per entry', (t) => {
   const dir = makeFixture(t, { entries: batchEntry('alpha') + batchEntry('beta') });
   const result = runEngine(dir, 'plan', '--dir', 'gold_traces');

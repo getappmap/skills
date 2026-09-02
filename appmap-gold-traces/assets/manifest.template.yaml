@@ -24,6 +24,9 @@ commands:
   #               test selectors). Set it when the project needs a virtualenv
   #               path, a wrapper script, a Maven profile, a workspace flag, ...
   #   args        optional; flags appended after the test selectors.
+  #   batch_size  optional; most tests per run. Leave unset: the engine already
+  #               splits runs that would exceed this machine's command-line
+  #               limit. Set it only to keep runs small on purpose.
   #
   # Defaults and what test_name means for each framework: run
   #   node "<skill>/assets/manage.mjs" --help

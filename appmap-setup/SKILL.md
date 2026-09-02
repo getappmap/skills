@@ -55,7 +55,7 @@ Note the exact commands; they become the record commands later.
 
 Follow **appmap-record** for the language and build tool. In a multi-module
 project, share one config and one output directory across modules (see the
-multi-module note in appmap-record). Add the output directory (`tmp/appmap/`)
+multi-module note in appmap-record, `languages/java.md`). Add the output directory (`tmp/appmap/`)
 and `.appmap/` to `.gitignore`.
 
 Record ONE unit test, then verify the `.appmap.json`: correct version and

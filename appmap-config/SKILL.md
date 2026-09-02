@@ -14,8 +14,8 @@ Two things decide what a recording contains:
   work out what a change means.
 
 This skill is the syntax reference for both. The
-agents differ from each other in ways that matter, so read the section for
-your language before writing the file. 
+agents differ from each other in ways that matter, so read the file for
+your language (see *Language reference*) before writing the config.
 
 To make a recording once the config is right, see **appmap-record**.
 
@@ -23,8 +23,8 @@ To make a recording once the config is right, see **appmap-record**.
 
 Each language agent creates a default `appmap.yml` if none exists. The
 default records your own code and leaves frameworks out. Start from it and
-change as little as possible. The per-language sections show the exact
-default each agent writes.
+change as little as possible. The language files show the exact default
+each agent writes.
 
 ```yaml
 name: my-project              # any name; shows up in recording metadata
@@ -38,7 +38,7 @@ packages:
 
 Java names a package by its dotted name in both entries. Ruby names a gem
 with `gem:`, Python a distribution with `dist:`, Node a library with
-`module:`. Each language section shows its form.
+`module:`. Each language file shows its form.
 
 Two rules:
 
@@ -164,7 +164,7 @@ useful after the change that prompted it is merged.
   an annotation; Python has a decorator.
 - **In `appmap.yml`**, for code you cannot edit, such as a framework or a
   vendored library. Every agent has a config form, and each one is shaped
-  differently. Syntax per language below.
+  differently. Syntax in the language files.
 
 Labels apply to functions only. If the thing you want to see is a field read
 or an environment variable, there is nothing to label. You'll have to add an
@@ -184,395 +184,21 @@ under that file's directory plus `appmap_dir`.
 
 A Maven multi-module build reads a separate config and writes a separate
 output directory per module by default. To share one of each across the
-build, point the Maven plugin at the root; **appmap-record** has the
-`pom.xml` snippet.
-
-
----
-
-## Ruby
-
-Verified against `getappmap/appmap-ruby`.
-
-### Default file the agent writes
-
-```yaml
-name: my_project
-packages:
-- path: app          # whichever of app/ and lib/ exist
-- path: lib
-language: ruby
-appmap_dir: tmp/appmap
-```
-
-### `appmap.yml`
-
-```yaml
-name: my_project
-language: ruby
-appmap_dir: tmp/appmap           # ignored by the Ruby agent; keep the default
-packages:
-- path: app                      # own code, recorded in full
-  exclude:                       # FILE PATH substrings, always a list
-  - app/models/generated
-- gem: rails                     # a gem; shallow is the default for gems
-- gem: devise
-  shallow: false                 # record a gem's internals
-
-exclude:                         # CLASS and METHOD names, exact match
-- GeneratedSchema
-- "Geometry#distance"            # instance method; quote because of "#"
-
-functions:                       # record and label methods, including gem code
-- methods:
-  - "Devise::Strategies::Authenticatable#authenticate!"
-  gem: devise
-  labels: [security.authentication]
-- methods:
-  - "Auth#validate_token"
-  - Auth.issue_token             # class method: dot, no quotes needed
-  path: app
-  labels: [security.authentication]
-```
-
-What each part does:
-
-- **`packages[].path`** is a directory, prefix-matched against the source
-  file path. Subdirectories become sub-packages on their own.
-- **`packages[].gem`** must be in the bundle. A gem that is not loaded raises
-  at startup and no recording happens. Gems default to `shallow: true`.
-- **`packages[].exclude`** is a list of **file path** substrings. It does not
-  take class names. A bare string instead of a list breaks at hook time, so
-  always write a list.
-- **Top-level `exclude`** takes exact class names (`Foo::Bar`, fully
-  qualified) and `Foo::Bar#method`. No prefixes, no globs. This is the way
-  to drop one noisy class or method. Class methods (`Foo.bar`) are not
-  reliably excluded here; the hook sees a singleton class with no name.
-- **`functions`** entries take `methods:` (a list of `Class#method` or
-  `Class.method` strings) or `method:` (one string), `labels:` or `label:`,
-  and one of `gem:` or `path:`. Class names must be written in full. This is
-  the one Ruby form that both records a method and labels it, and the only
-  way to reach gem code you cannot edit. An older form with `package:`,
-  `class:`, `functions:` still loads but cannot reach gem code.
-- A `labels:` key under a `packages:` entry is silently ignored.
-- Never hooked from `packages:` regardless of config: `initialize`, methods
-  named `call`, `attr_accessor` methods, and anything in `Marshal`,
-  `AppMap`, or `ActiveSupport`.
-
-### Label syntax
-
-A comment above the method. Several labels are separated by spaces, not
-commas. The parser walks up from the `def` through comment and blank lines,
-so the label can sit above other comment lines.
-
-```ruby
-# @label security.authentication
-def authenticate(user, password)
-  # ...
-end
-
-# @labels security.authentication audit
-def login(user)
-  # ...
-end
-```
-
-A `# @label` above a `class` line does nothing. `## @label` does not match.
-
----
-
-## Python
-
-Verified against `getappmap/appmap-python`.
-
-### Default file the agent writes
-
-```yaml
-appmap_dir: tmp/appmap
-language: python
-name: my_python_app
-packages:
-- path: myapp        # each top-level directory with an __init__.py, tests skipped
-record_test_cases: false
-```
-
-### `appmap.yml`
-
-```yaml
-name: my_python_app
-language: python
-appmap_dir: tmp/appmap
-packages:
-- path: myapp.util.Geometry     # a class; put narrow or shallow entries FIRST
-  shallow: true
-- path: myapp                   # own code, recorded in full
-  exclude:                      # dotted names RELATIVE to path, prefix match
-  - geometry.distance           # the function myapp.geometry.distance
-  - schema.GeneratedModel       # the class myapp.schema.GeneratedModel
-  - generated                   # the whole subpackage myapp.generated
-- dist: flask                   # third-party, by distribution name; shallow by default
-
-labels:                         # label -> fully qualified name(s); also records them
-  security.authentication: myapp.auth.AuthService.login
-  audit:
-  - myapp.auth.AuthService.login
-  - myapp.billing.Ledger.post
-```
-
-What each part does:
-
-- **`path`** is a dotted module path, compared component by component
-  against each function's full name (`myapp.auth.AuthService.login`). So
-  `myapp` does not match `myapp2`, and a class or even a single function can
-  be a `path`.
-- **The first matching entry wins.** A narrow entry placed after a broad one
-  never fires. Put class-level and shallow entries above the package entry.
-- **`exclude`** names are relative to the entry's `path` and match by
-  prefix. An absolute name (`myapp.geometry.distance` under `path: myapp`)
-  matches nothing.
-- **`dist`** names a distribution. It defaults to `shallow: true`; `path`
-  entries default to full depth. `dist` and `path` can be combined to narrow
-  within a distribution.
-- **`labels`** is a top-level map from label to one fully qualified function
-  name or a list of them. A function named here is recorded even when no
-  `packages:` entry covers it. Use it for code you cannot edit.
-- **`record_test_cases`** controls whether the test function itself appears
-  as a call event. Per-test recordings happen without it.
-- There is no top-level `exclude`.
-
-### Label syntax
-
-A decorator from the `appmap` package, for code you own. Like the Java
-annotation, it needs the package present at runtime. The package exports
-`labels` when the `APPMAP` environment variable is `true`, so import it
-through a small shim that gives every other run a no-op decorator. Put the
-shim in one module and import it from there:
-
-```python
-# myapp/appmap_labels.py
-try:
-    from appmap import labels
-except ImportError:          # APPMAP is not "true": not recording
-    def labels(*_names):
-        return lambda fn: fn
-```
-
-```python
-from myapp.appmap_labels import labels
-
-class AuthService:
-    @labels("security.authentication", "audit")   # several labels: varargs
-    def login(self, user):
-        pass
-
-    @staticmethod
-    @labels("secret")                             # directly above def, under
-    def signing_key():                            # @staticmethod / @classmethod
-        pass
-```
-
-The labeled function's package must be in `packages:`, the same rule as the
-Java annotation. Label a function in one place: an entry in the `labels:`
-key replaces the decorator's labels on the same function.
-
----
-
-## Node / JavaScript / TypeScript
-
-Verified against `getappmap/appmap-node`.
-
-### Default file the agent writes
-
-```yaml
-name: my-app             # package.json name, else the directory name
-language: javascript
-appmap_dir: tmp/appmap
-packages:
-  - path: .
-    exclude:
-      - node_modules
-      - .yarn
-```
-
-### `appmap.yml`
-
-```yaml
-name: my-app
-language: javascript
-appmap_dir: tmp/appmap
-packages:
-  - path: src                   # own code, recorded in full
-    exclude:
-      - node_modules            # re-add these whenever you write packages: yourself
-      - .yarn
-      - src/util/geometry.ts    # a file: matched as a substring of the full path
-      - formatCurrency          # a function, by exact name
-      - Cart.recalculate        # a method: Class.method (no "#" form)
-  - module: express             # a library, by its require()/import id
-    shallow: true
-  - module: some-auth-lib
-    shallow: true
-    functions:                  # record-and-label is NOT what this does; it only labels
-      - names: [authenticate, validateToken]
-        labels: [security.authentication]
-```
-
-What each part does:
-
-- **`path`** is a file system path relative to `appmap.yml`, prefix-matched.
-  A bare string entry (`- src`) means `{path: src}`.
-- **Defaults vanish when you write `packages:`.** The default excludes for
-  `node_modules` and `.yarn` are only present when the key is absent.
-  Add them back to every `path: .` entry.
-- **`exclude`** entries are checked as substrings of the absolute file path
-  first, then as exact function names, then as `Class.method`. No globs. A
-  short word like `test` excludes every file with that word anywhere in its
-  path.
-- **`module`** names a library by its exact import id (`express`,
-  `node:console`; the `node:` prefix is optional). It wraps the module's
-  exports. Use it instead of `path: node_modules/...`, which is untested.
-  `path` and `module` cannot be combined.
-- **`shallow`** must be a YAML boolean; `"true"` in quotes is ignored.
-- **`functions`** under a package attaches labels to functions of that
-  package, by bare name only. Singular `name:` and `label:` also work.
-  `Class.method` inside `names` does not work in the current release. It
-  does not make anything get recorded, and does not override `shallow`. The
-  tested use is on a `module:` package.
-- There is no top-level `exclude`.
-
-### Label syntax
-
-A `//` comment above the function. Block comments and JSDoc are ignored. The
-parser walks up through consecutive `//` lines; a blank line stops it.
-
-```javascript
-// @label security.authentication
-function authenticate(user, password) {
-  // ...
-}
-
-// @labels security.authentication audit
-async function login(user) {
-  // ...
-}
-
-class Session {
-  // @label security.logout
-  destroy() {}
-}
-
-// @label pricing.discount
-const applyDiscount = (cart) => { /* ... */ };   // const only; let/var are not instrumented
-```
-
-Works in TypeScript and through source maps. Not applied to anonymous
-functions, generator methods, or methods of unnamed classes.
-
----
-
-## Java
-
-Verified against `getappmap/appmap-java`.
-
-### Default file the agent writes
-
-```yaml
-name: my-project
-packages:
-- path: com.mycorp.myproject     # every package under src/main/java that holds a .java file
-```
-
-### `appmap.yml`
-
-```yaml
-name: my-project
-language: java
-appmap_dir: tmp/appmap
-packages:
-- path: com.mycorp.myproject     # own code, recorded in full, subpackages included
-  exclude:                       # relative or absolute; prefix match on the name
-  - generated                    # the subpackage com.mycorp.myproject.generated
-  - util.Geometry                # a class
-  - "cache.Cache#clear"          # a method; "#" or "." both work
-  - com.mycorp.myproject.legacy  # absolute form
-- path: org.springframework      # framework: first call in, no internals
-  shallow: true
-
-# Label methods in code you cannot edit: methods: with class/name regexes.
-# This entry records ONLY the listed methods of that exact package.
-- path: org.somevendor.auth
-  methods:
-  - class: Authenticator         # simple or fully qualified; anchored regex
-    name: authenticate
-    labels: [security.authentication]
-  - class: Authenticator
-    name: validateToken          # recorded, no labels
-```
-
-What each part does:
-
-- **`path`** is a package name, matched on whole segments, subpackages
-  included (`com.example` matches `com.example.sub`, not `com.examples`). A
-  class name works as `path` for the unnamed package.
-- **`exclude`** entries are relative to `path` or absolute. Matching is a
-  raw prefix on `sub.Class.method`, so `Cache.clear` also excludes
-  `Cache.clearAll` and `Internal` also excludes `InternalFoo`. `#` is
-  accepted and rewritten to `.`; quote it in YAML.
-- **The four keys under a package are `path`, `exclude`, `shallow`, and
-  `methods`.** Any other key, for example `classes:` or `labels:`, is a
-  fatal parse error and the agent exits.
-- **`methods`** is a list of `{class, name, labels}`. `class` and `name` are
-  anchored regular expressions: `name: process` does not match
-  `processData`; write `handle.*` or `(info|debug)`. Escape `$` in inner
-  class names (`Outer\$Inner`). A package entry with `methods` records only
-  those methods, its `exclude` is ignored, and `path` must equal the method's
-  package exactly, subpackages not included.
-- **Entry order matters for labels.** The first package entry whose `path`
-  matches wins. To label a few methods and still record the rest of the
-  same package, put the `methods` entry first and a plain `path` entry for
-  the same package after it.
-- Never recorded regardless of config: private methods (unless
-  `-Dappmap.record.private=true`), constructors, static initializers,
-  getters and setters, `equals`, `hashCode`, `toString`, `iterator`,
-  generated code without line numbers, and anything in `java.`, `jdk.`,
-  `sun.`. A `methods` entry naming `getToken` records nothing.
-- `-Dappmap.config.file` or `APPMAP_CONFIG_FILE` points at the file; when
-  set, the file must exist. `-Dappmap.output.directory` overrides
-  `appmap_dir`.
-
-### Label syntax
-
-An annotation from `com.appland:appmap-annotation`, on methods only. The
-class must be on the runtime classpath, not just at compile time.
-
-```java
-import com.appland.appmap.annotation.Labels;
-
-@Labels("security.authentication")
-public boolean authenticate(String user, String password) {
-    // ...
-}
-
-@Labels({"security.authentication", "audit"})
-public User login(String user) {
-    // ...
-}
-```
-
-Add the dependency:
-
-```xml
-<dependency>
-  <groupId>com.appland</groupId>
-  <artifactId>appmap-annotation</artifactId>
-  <version>LATEST</version>
-</dependency>
-```
-
-Annotation labels replace, not merge with, labels from a `methods:` entry
-for the same method. The method's package must still be in `packages:`.
-
----
+build, point the Maven plugin at the root; **appmap-record**, `languages/java.md`,
+has the `pom.xml` snippet.
+
+## Language reference
+
+Read the one file for the project's language. Each shows the default
+`appmap.yml` the agent writes, a starting config, what `exclude:` matches,
+and the label syntax for that agent.
+
+| Language | File |
+| --- | --- |
+| Ruby | `languages/ruby.md` |
+| Python | `languages/python.md` |
+| Node / JavaScript / TypeScript | `languages/node.md` |
+| Java | `languages/java.md` |
 
 ## Verify a config change
 

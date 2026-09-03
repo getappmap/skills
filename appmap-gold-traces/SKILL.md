@@ -271,11 +271,22 @@ if the release touched no traceable application code.**
    git log -1 --format=%h -- gold_traces/baseline/appmaps/
    ```
    Review traceable change since then (`git log <that-commit>..HEAD --oneline -- <app source>`)
-   and **enhance the entries** for new/changed subsystems: add an entry for a
-   newly-critical path this release introduced or materially changed (get its
-   `appmap_path` from `discover` — see **Engine commands**). Check new entries
-   with `check --only <test> --record`; after review, `update --only <test>`
-   seeds their baselines from the checked recordings.
+   and **enhance the entries** for new/changed subsystems, in two ways:
+
+   - **Extend an existing entry's `expect`.** When the release materially changed
+     a subsystem an entry already guards, add the new release-critical code
+     objects to that entry's `expect` list: the new service method, the new
+     query path, the new check. `check --record` prints each recording's project
+     code objects, which is the candidate list; pick the ones the trace must
+     keep executing, not everything it touched. This is how the baseline's
+     contract grows with the code. An `expect` list left as it was at bootstrap
+     only guards the code that existed then.
+   - **Add an entry** for a newly-critical path the release introduced (get its
+     `appmap_path` from `discover` — see **Engine commands**).
+
+   Check changed and new entries with `check --only <test> --record`; after
+   review, `update --only <test>` blesses or seeds their baselines from the
+   checked recordings.
 
 2. **Check, re-record, and see what changed.** First run the mandatory suitability
    and two-recording stability check:

@@ -27,6 +27,7 @@
 
 import path from 'node:path';
 import process from 'node:process';
+import { accessSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 /**
@@ -34,11 +35,69 @@ import { spawnSync } from 'node:child_process';
  * @typedef {{ entries: Entry[], args: string[] }} Group
  * @typedef {{
  *   runner: string,
+ *   detectRunner?: (cwd: string) => string | null,
+ *   runnerNote?: string,
  *   env: Record<string, string>,
  *   testName: string,
  *   plan: (entries: Entry[]) => Group[],
  * }} Framework
  */
+
+// ---------------------------------------------------------------------------
+// Launcher detection
+// ---------------------------------------------------------------------------
+//
+// The default launcher is chosen per project when `commands.runner` is unset.
+// The cases worth detecting are the ones where the plain command would run the
+// wrong thing:
+//
+//   Python  `appmap-python` sets a few APPMAP_* variables and then execs the
+//           command it was given, found through PATH. It does not put its own
+//           virtualenv on PATH, so `.venv/bin/appmap-python pytest` runs whatever
+//           pytest the shell finds, from a different interpreter, and records
+//           nothing. Name both tools by path. uv, Poetry, and Pipenv fix PATH
+//           themselves, so `<tool> run appmap-python pytest` is enough there.
+//   Java    Prefer the project's wrapper script (`mvnw`, `gradlew`) when present.
+//
+// Node needs nothing: `npx` resolves node_modules/.bin under npm, yarn, and pnpm.
+// Ruby needs nothing: `bundle exec` is universal.
+
+function fileExists(cwd, relative) {
+  try {
+    accessSync(path.join(cwd, relative));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The venv's scripts dir, if a venv with appmap-python installed sits in cwd. */
+function venvBin(cwd) {
+  for (const venv of ['.venv', 'venv']) {
+    for (const bin of ['bin', 'Scripts']) {
+      if (fileExists(cwd, `${venv}/${bin}/appmap-python`)) return `${venv}/${bin}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {string} cwd
+ * @param {string} tool  the command after appmap-python: `pytest` or `python -m unittest`
+ */
+function pythonLauncher(cwd, tool) {
+  const bin = venvBin(cwd);
+  if (bin) {
+    const [exe, ...rest] = tool.split(' ');
+    return [`${bin}/appmap-python`, `${bin}/${exe}`, ...rest].join(' ');
+  }
+  if (fileExists(cwd, 'uv.lock')) return `uv run appmap-python ${tool}`;
+  if (fileExists(cwd, 'poetry.lock')) return `poetry run appmap-python ${tool}`;
+  if (fileExists(cwd, 'Pipfile.lock') || fileExists(cwd, 'Pipfile')) return `pipenv run appmap-python ${tool}`;
+  return null;
+}
+
+const PYTHON_RUNNER_NOTE = 'detected: .venv or venv (both tools by path), else uv.lock, poetry.lock, or Pipfile';
 
 // A `#` starts a comment only at the start of a word, so `-Dtest=Foo#bar` is safe bare.
 const SAFE_ARG = /^[\w./:@=+,%-][\w./:@=+,%#-]*$/;
@@ -109,6 +168,8 @@ function splitLinesAndNames(entries) {
 export const FRAMEWORKS = {
   pytest: {
     runner: 'appmap-python pytest',
+    detectRunner: (cwd) => pythonLauncher(cwd, 'pytest'),
+    runnerNote: PYTHON_RUNNER_NOTE,
     env: {},
     testName: 'the node id after the file: test_x, or TestY::test_z for a method',
     plan(entries) {
@@ -118,6 +179,8 @@ export const FRAMEWORKS = {
 
   unittest: {
     runner: 'appmap-python python -m unittest',
+    detectRunner: (cwd) => pythonLauncher(cwd, 'python -m unittest'),
+    runnerNote: PYTHON_RUNNER_NOTE,
     env: {},
     testName: 'TestClass.test_method; test_file is the module file (tests/test_a.py)',
     plan(entries) {
@@ -205,6 +268,8 @@ export const FRAMEWORKS = {
 
   maven: {
     runner: 'mvn test',
+    detectRunner: (cwd) => (fileExists(cwd, 'mvnw') ? './mvnw test' : null),
+    runnerNote: 'detected: ./mvnw when the wrapper is present',
     env: {},
     testName: 'Class#method or Class.method; a bare method name takes the class from the file name',
     plan(entries) {
@@ -223,6 +288,8 @@ export const FRAMEWORKS = {
 
   gradle: {
     runner: 'gradle appmap test',
+    detectRunner: (cwd) => (fileExists(cwd, 'gradlew') ? './gradlew appmap test' : null),
+    runnerNote: 'detected: ./gradlew when the wrapper is present',
     env: {},
     testName: 'Class.method or Class#method; a bare method name takes the class from the file name',
     plan(entries) {
@@ -257,14 +324,24 @@ export function getFramework(name) {
 }
 
 /**
+ * The launcher for a project: `commands.runner` if set, else the framework's
+ * detection for the directory the commands run from, else its plain default.
+ * @param {{ framework: string, runner?: string | null }} commands
+ * @param {string} [cwd]
+ */
+export function resolveRunner(commands, cwd = process.cwd()) {
+  const framework = getFramework(commands.framework);
+  return commands.runner ?? framework.detectRunner?.(cwd) ?? framework.runner;
+}
+
+/**
  * Build the shell command for one group: `<runner> <selectors> <args>`.
  * @param {{ framework: string, runner?: string | null, args?: string | null }} commands
  * @param {Group} group
+ * @param {string} [cwd]  where the command runs; used for launcher detection
  */
-export function buildCommand(commands, group) {
-  const framework = getFramework(commands.framework);
-  const runner = commands.runner ?? framework.runner;
-  return [runner, ...group.args.map(shellQuote), commands.args ?? ''].filter(Boolean).join(' ');
+export function buildCommand(commands, group, cwd = process.cwd()) {
+  return [resolveRunner(commands, cwd), ...group.args.map(shellQuote), commands.args ?? ''].filter(Boolean).join(' ');
 }
 
 // How long one record command may be, measured on this machine.
@@ -323,18 +400,19 @@ function maxCommandLengthOnThisMachine() {
  *
  * @param {{ framework: string, runner?: string | null, args?: string | null }} commands
  * @param {Entry[]} entries
- * @param {{ batchSize?: number | null, maxCommandLength?: number | null }} [limits]
+ * @param {{ batchSize?: number | null, maxCommandLength?: number | null, cwd?: string }} [limits]
  * @returns {{ entries: Entry[], command: string, env: Record<string, string> }[]}
  */
 export function planRecordCommands(commands, entries, limits = {}) {
   const framework = getFramework(commands.framework);
   const maxCommandLength = limits.maxCommandLength ?? maxCommandLengthOnThisMachine();
   const batchSize = limits.batchSize && limits.batchSize > 0 ? limits.batchSize : Infinity;
+  const cwd = limits.cwd ?? process.cwd();
   const result = [];
 
   const planChunk = (chunk) => {
     for (const group of framework.plan(chunk)) {
-      const command = buildCommand(commands, group);
+      const command = buildCommand(commands, group, cwd);
       if (command.length > maxCommandLength && group.entries.length > 1) {
         const half = Math.ceil(group.entries.length / 2);
         planChunk(group.entries.slice(0, half));
@@ -354,7 +432,14 @@ export function planRecordCommands(commands, entries, limits = {}) {
 /** One line per framework, for `--help` and the `plan` command. */
 export function describeFrameworks() {
   const width = Math.max(...frameworkNames().map((name) => name.length));
+  const pad = ''.padEnd(width);
   return frameworkNames()
-    .map((name) => `  ${name.padEnd(width)}  runner: ${FRAMEWORKS[name].runner}\n  ${''.padEnd(width)}  test_name: ${FRAMEWORKS[name].testName}`)
+    .map((name) => {
+      const framework = FRAMEWORKS[name];
+      const lines = [`  ${name.padEnd(width)}  runner: ${framework.runner}`];
+      if (framework.runnerNote) lines.push(`  ${pad}  ${framework.runnerNote}`);
+      lines.push(`  ${pad}  test_name: ${framework.testName}`);
+      return lines.join('\n');
+    })
     .join('\n');
 }

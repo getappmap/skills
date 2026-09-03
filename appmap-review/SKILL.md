@@ -35,7 +35,10 @@ appmap-review <baseline-rev> [<head-rev>]
 - **One revision** — it is the **baseline**; `head` defaults to the current `HEAD`.
 - **Two revisions** — explicit `baseline` then `head`.
 
-A revision is any git ref (SHA, branch, tag).
+A revision is any git ref (SHA, branch, tag). The head may also be the **working
+tree**, for a review before anything is committed: the recordings the gold-traces
+engine just made, or baselines blessed but not yet committed. See **Head from the
+working tree** below; the baseline always comes from git.
 
 ## How it works
 
@@ -107,6 +110,26 @@ for rev in base head; do
   done
 done
 
+# 1b — HEAD FROM THE WORKING TREE (pre-commit review): run instead of the head
+#      half of step 1. See "Head from the working tree" below for when to use which.
+#
+#      (a) the fresh recordings under $appmap_dir for the manifest's entries — what
+#          `check --record` / `update --dry-run` just produced, already sanitized by
+#          the engine. This is the review that decides what to bless.
+mkdir -p "$review_root/head/$appmap_dir"
+cp appmap.yml "$review_root/head/appmap.yml"
+for rel in $(sed -n 's/^ *appmap_path: *//p' gold_traces/manifest.yaml); do
+  mkdir -p "$review_root/head/$appmap_dir/$(dirname "$rel")"
+  cp "$appmap_dir/$rel" "$review_root/head/$appmap_dir/$rel"
+done
+#
+#      (b) baselines blessed in the working tree but not committed.
+# for f in $(find gold_traces -path '*/appmaps/*.appmap.json'); do
+#   rel="${f##*/appmaps/}"
+#   mkdir -p "$review_root/head/$appmap_dir/$(dirname "$rel")"
+#   cp "$f" "$review_root/head/$appmap_dir/$rel"
+# done
+
 # 2 — Archive each side. archive's DEFAULT output is .appmap/archive/full/<rev>.tar;
 #     do NOT pass an absolute --output-file (the internal tar mangles it). Just cd in
 #     and pass --revision. archive runs the scanner and OpenAPI automatically.
@@ -144,6 +167,27 @@ equality-preserving token (`<v1>`, `<uuid:v3>`), not real data. Reason from labe
 call structure, and SQL *shape*, never from a value's contents; equal tokens still
 signal equal values (data flow), and both revisions are sanitized identically so a
 token never registers as a change.
+
+## Head from the working tree
+
+The natural moment to review is before committing, and the gold-traces workflow
+depends on it: **appmap-gold-traces** says "re-record, review, then bless what the
+review confirms". The recordings that review must judge are not in git yet. Two
+working-tree sources cover it, both extracted by step 1b above:
+
+| Head source | When | What it contains |
+| --- | --- | --- |
+| (a) fresh recordings under `appmap_dir`, for the manifest's entries | after `check --record` or `update --dry-run`, before `update` blesses anything | the candidates for blessing, sanitized by the engine |
+| (b) the working tree's `gold_traces/` | after `update` blessed, before the commit | the baselines as they would be committed |
+
+Source (a) is the one that closes the loop: run it, decide from the findings which
+drift is intended, then `update` (with `--only` for a partial bless), then commit.
+Source (b) is a last look at what a commit would contain.
+
+Everything after extraction is unchanged. In the report, write `working tree` as
+the head revision, and state once in the banner that the head recordings are
+uncommitted. The source diff for the recipe is `git diff <baseline>` with no head
+ref, which includes uncommitted changes.
 
 ## Interpret — the review recipe
 

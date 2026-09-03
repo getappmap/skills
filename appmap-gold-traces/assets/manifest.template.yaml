@@ -20,9 +20,11 @@ commands:
   #
   #   framework   pytest | unittest | rspec | minitest | rails-test |
   #               jest | vitest | mocha | maven | gradle
-  #   runner      optional; replaces the default launcher (the part before the
-  #               test selectors). Set it when the project needs a virtualenv
-  #               path, a wrapper script, a Maven profile, a workspace flag, ...
+  #   runner      optional; replaces the launcher (the part before the test
+  #               selectors). Unset, the engine detects it: a Python .venv/venv
+  #               (both tools by path), uv/poetry/pipenv lock files, a Maven or
+  #               Gradle wrapper. Set it for a profile, a workspace flag, a
+  #               wrapper the engine does not know, ...
   #   args        optional; flags appended after the test selectors.
   #   batch_size  optional; most tests per run. Leave unset: the engine already
   #               splits runs that would exceed this machine's command-line
@@ -36,7 +38,6 @@ commands:
   # Examples (pick one, delete the rest):
   #
   #   framework: pytest
-  #   runner: .venv/bin/appmap-python pytest
   #   args: -q
   #
   #   framework: rspec
@@ -47,7 +48,6 @@ commands:
   #   framework: maven
   #   runner: ./mvnw -Pintegration com.appland:appmap-maven-plugin:prepare-agent test
   framework: pytest
-  runner: .venv/bin/appmap-python pytest
   args: -q
 
   # For a runner the engine does not know, give a full shell template instead of

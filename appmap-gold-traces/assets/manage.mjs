@@ -40,7 +40,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
-import { describeFrameworks, frameworkNames, getFramework, planRecordCommands } from './frameworks.mjs';
+import { describeFrameworks, frameworkNames, planRecordCommands, resolveRunner } from './frameworks.mjs';
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
@@ -486,7 +486,7 @@ function recordPlan(env, entries) {
       env: {},
     }));
   }
-  return planRecordCommands(config, entries, { batchSize: config.batch_size });
+  return planRecordCommands(config, entries, { batchSize: config.batch_size, cwd: env.workingDir });
 }
 
 function runRecordGroup(env, group) {
@@ -500,7 +500,7 @@ function printRecordPlan(env, entries) {
   requireRecordConfig(env, 'plan');
   const groups = recordPlan(env, entries);
   const how = env.config.framework
-    ? `framework ${env.config.framework} (runner: ${env.config.runner ?? getFramework(env.config.framework).runner})`
+    ? `framework ${env.config.framework} (runner: ${resolveRunner(env.config, env.workingDir)}${env.config.runner ? '' : ', detected'})`
     : 'commands.record template, one run per test';
   console.log(`${groups.length} record run(s) for ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} via ${how}, from ${env.workingDir}:`);
   for (const group of groups) {

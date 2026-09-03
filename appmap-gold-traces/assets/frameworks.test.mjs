@@ -5,9 +5,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
-  FRAMEWORKS, buildCommand, planRecordCommands, shellQuote, escapeRegex, frameworkNames, detectMaxCommandLength,
+  FRAMEWORKS, buildCommand, planRecordCommands, resolveRunner, shellQuote, escapeRegex, frameworkNames,
+  detectMaxCommandLength,
 } from './frameworks.mjs';
 
 const entry = (test_file, test_name) => ({ test_file, test_name });
@@ -54,6 +58,55 @@ test('buildCommand: runner override replaces the launcher, args are appended', (
 
 test('planRecordCommands: rejects an unknown framework by name', () => {
   assert.throws(() => planRecordCommands({ framework: 'nose' }, []), /Unknown commands.framework 'nose'/);
+});
+
+// --- launcher detection ----------------------------------------------------
+
+function projectDir(t, files) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frameworks-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), '');
+  }
+  return dir;
+}
+
+test('detect: a venv with appmap-python names both tools by path, so pytest runs inside it', (t) => {
+  const dir = projectDir(t, ['.venv/bin/appmap-python']);
+  assert.equal(resolveRunner({ framework: 'pytest' }, dir), '.venv/bin/appmap-python .venv/bin/pytest');
+  assert.equal(resolveRunner({ framework: 'unittest' }, dir), '.venv/bin/appmap-python .venv/bin/python -m unittest');
+  const windows = projectDir(t, ['venv/Scripts/appmap-python']);
+  assert.equal(resolveRunner({ framework: 'pytest' }, windows), 'venv/Scripts/appmap-python venv/Scripts/pytest');
+});
+
+test('detect: uv, poetry, and pipenv projects run through their own `run`', (t) => {
+  assert.equal(resolveRunner({ framework: 'pytest' }, projectDir(t, ['uv.lock'])), 'uv run appmap-python pytest');
+  assert.equal(resolveRunner({ framework: 'pytest' }, projectDir(t, ['poetry.lock'])), 'poetry run appmap-python pytest');
+  assert.equal(resolveRunner({ framework: 'pytest' }, projectDir(t, ['Pipfile'])), 'pipenv run appmap-python pytest');
+});
+
+test('detect: a venv wins over a lock file; nothing detected falls back to the plain default', (t) => {
+  const both = projectDir(t, ['.venv/bin/appmap-python', 'uv.lock']);
+  assert.equal(resolveRunner({ framework: 'pytest' }, both), '.venv/bin/appmap-python .venv/bin/pytest');
+  assert.equal(resolveRunner({ framework: 'pytest' }, projectDir(t, [])), 'appmap-python pytest');
+});
+
+test('detect: maven and gradle prefer the wrapper scripts', (t) => {
+  assert.equal(resolveRunner({ framework: 'maven' }, projectDir(t, ['mvnw'])), './mvnw test');
+  assert.equal(resolveRunner({ framework: 'maven' }, projectDir(t, [])), 'mvn test');
+  assert.equal(resolveRunner({ framework: 'gradle' }, projectDir(t, ['gradlew'])), './gradlew appmap test');
+});
+
+test('detect: an explicit runner is never overridden by detection', (t) => {
+  const dir = projectDir(t, ['.venv/bin/appmap-python']);
+  assert.equal(resolveRunner({ framework: 'pytest', runner: 'tox -e py -- ' }, dir), 'tox -e py -- ');
+});
+
+test('detect: planRecordCommands uses the cwd it is given', (t) => {
+  const dir = projectDir(t, ['.venv/bin/appmap-python']);
+  const [group] = planRecordCommands({ framework: 'pytest' }, [entry('tests/test_a.py', 'test_x')], { cwd: dir });
+  assert.equal(group.command, '.venv/bin/appmap-python .venv/bin/pytest tests/test_a.py::test_x');
 });
 
 // --- batch limits: a count from the manifest, a length from the machine -------

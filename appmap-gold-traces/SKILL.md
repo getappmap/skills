@@ -289,7 +289,10 @@ if the release touched no traceable application code.**
    It marks each trace `bless` (behavior changed), `seed` (new entry), or counts it
    `unchanged`. The digest excludes timing/value jitter, so a `bless` is a real change.
    For a full **interpreted** review of what changed and whether it's safe, run
-   **appmap-review**.
+   **appmap-review** with the last blessed commit as the baseline and the **working
+   tree** as the head (its "Head from the working tree", source (a)): it reads the
+   fresh, already-sanitized recordings under `appmap_dir` for the manifest's
+   entries, which is exactly the set `update` would bless.
 
 3. **Review, then bless what's intended.** Deciding whether a changed trace is
    intended — or a regression, or an unintended side effect — is **appmap-review**'s
@@ -322,7 +325,7 @@ coverage expectations and changing `schema_version` to `2`.
 | Field | Meaning |
 |---|---|
 | `commands.framework` | The test framework: `pytest`, `unittest`, `rspec`, `minitest`, `rails-test`, `jest`, `vitest`, `mocha`, `maven`, or `gradle`. The engine builds the record commands from its registry (`assets/frameworks.mjs`) and batches the gold set into as few runs as the framework allows. Preferred whenever the project's runner is one of these. Exclusive with `commands.record`. |
-| `commands.runner` *(optional)* | Replaces the framework's default launcher, the part of the command before the test selectors (for example `.venv/bin/appmap-python pytest`, `npx appmap-node yarn jest`, `./mvnw -Pintegration test`). |
+| `commands.runner` *(optional)* | Replaces the launcher, the part of the command before the test selectors (for example `npx appmap-node yarn jest`, `./mvnw -Pintegration test`). Unset, the engine detects it per project: a Python `.venv`/`venv` with `appmap-python` installed (both tools named by path, because `appmap-python` finds its command through `PATH` and does not add the venv to it), else a uv, Poetry, or Pipenv lock file; a Maven or Gradle wrapper script. `plan` shows the result. |
 | `commands.args` *(optional)* | Flags appended after the test selectors (for example `-q`). |
 | `commands.batch_size` *(optional)* | Most tests that may share one run. Unset means as many as the framework and the shell allow. Set it to keep runs small on purpose, for example to isolate a flaky test. Command length is limited separately and automatically: the engine measures this machine's shell limit (`ARG_MAX` minus the environment on POSIX, the 8 KB line on Windows) and splits any run that would exceed it. |
 | `commands.record` | For a runner the registry does not know: a shell template to record ONE test, run from the gold_traces parent dir with `{test_file}` and `{test_name}` substituted, once per entry. Exclusive with `commands.framework`. |

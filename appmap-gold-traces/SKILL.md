@@ -1,3 +1,8 @@
+---
+name: appmap-gold-traces
+description: Maintain a committed baseline of curated AppMap recordings (gold traces). Bootstrap gold_traces/manifest.yaml, choose suitable tests, record them with the bundled engine, check size and run-to-run stability, and bless new baselines when code legitimately changes. Use when asked to create, update, check, or bless gold traces, or when a review needs a baseline. To diff and review two revisions, see appmap-review.
+---
+
 # Skill: Maintain AppMap Gold Traces
 
 Maintain a curated set of AppMap recordings — **gold traces** — committed in the
@@ -93,7 +98,7 @@ Rule a candidate **out** before adding it to the manifest:
 an entry, run:
 
 ```sh
-node "<skill>/assets/manage.mjs" check --dir gold_traces --record \
+node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" check --dir gold_traces --record \
   --only <test_name>
 ```
 
@@ -122,7 +127,7 @@ The engine and templates ship with this skill; the *data* lives in the target
 project and is committed there.
 
 ```
-<skill>/assets/
+<this skill's directory>/assets/
   manage.mjs                          engine (config-driven, zero-install Node)
   manage.test.mjs                     engine tests (node --test, no deps)
   frameworks.mjs                      test-framework registry: per-framework test selectors and batching
@@ -139,11 +144,12 @@ The engine has no npm dependencies — it runs straight from Node (uses a bundle
 minimal YAML reader). Invoke it from the **project root**:
 
 ```sh
-node "<skill>/assets/manage.mjs" <command> --dir gold_traces [options]
+node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" <command> --dir gold_traces [options]
 ```
 
-(`<skill>` is this skill's directory — substitute its absolute path. `--dir`
-defaults to `gold_traces`.)
+(The path before `/assets/` is this skill's directory, the one holding this
+SKILL.md. Claude Code fills it in when it loads the skill; any other runner should
+substitute the skill's absolute path. `--dir` defaults to `gold_traces`.)
 
 
 ## Monorepos
@@ -168,7 +174,7 @@ and reads recordings from wherever the **nearest-ancestor `appmap.yml`** collect
 and recordings come from the nearest ancestor `appmap.yml`:
 
 ```sh
-node "<skill>/assets/manage.mjs" update --dir packages/<name>/gold_traces --record
+node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" update --dir packages/<name>/gold_traces --record
 ```
 
 ## Bootstrap (first time in a project)
@@ -178,7 +184,7 @@ When `gold_traces/` does not yet exist:
 1. **Create the directory** and seed it from the template:
    ```sh
    mkdir -p gold_traces/baseline/appmaps
-   cp "<skill>/assets/manifest.template.yaml"  gold_traces/manifest.yaml
+   cp "${CLAUDE_SKILL_DIR}/assets/manifest.template.yaml"  gold_traces/manifest.yaml
    ```
    The engine's derived work lands in `.appmap/gold-traces` (AppMap's regenerable
    working dir). Ensure `.appmap/` is gitignored — most AppMap projects already ignore
@@ -195,7 +201,7 @@ When `gold_traces/` does not yet exist:
    ```
    The engine knows how each framework names one test and how it names several,
    so it records the whole gold set in as few runs as the framework allows. `node
-   "<skill>/assets/manage.mjs" --help` lists the frameworks, each one's default
+   "${CLAUDE_SKILL_DIR}/assets/manage.mjs" --help` lists the frameworks, each one's default
    launcher, and what `test_name` must be for it. Find the launcher by inspecting
    the project: lean on the `appmap-record` skill to make a sample recording, and
    check the README, LLM instruction files, `package.json` scripts, `Makefile`,
@@ -220,7 +226,7 @@ When `gold_traces/` does not yet exist:
    Get each entry's `appmap_path` from the engine — do **not** guess it from naming
    conventions or hunt for recordings with `ls`/`find`:
    ```sh
-   node "<skill>/assets/manage.mjs" discover --dir gold_traces \
+   node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" discover --dir gold_traces \
      --test-file <test_file> --test-name <test_name>
    ```
    `discover` records the one test and prints the recording path(s) it produced,
@@ -232,7 +238,7 @@ When `gold_traces/` does not yet exist:
 
 4. **Check suitability and stability.** This is required for every new entry:
    ```sh
-   node "<skill>/assets/manage.mjs" check --dir gold_traces --record
+   node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" check --dir gold_traces --record
    ```
    Resolve failures and investigate warnings. Reuse a better existing test before
    synthesizing a focused test; synthesize only when no existing test captures the
@@ -241,7 +247,7 @@ When `gold_traces/` does not yet exist:
 5. **Seed the baseline.** Reuse the second checked recording and copy it into the
    baseline:
    ```sh
-   node "<skill>/assets/manage.mjs" update --dir gold_traces
+   node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" update --dir gold_traces
    ```
    `update` seeds `baseline/appmaps/`
    (every entry is new on the first run, so all are seeded). To seed only specific
@@ -291,11 +297,11 @@ if the release touched no traceable application code.**
 2. **Check, re-record, and see what changed.** First run the mandatory suitability
    and two-recording stability check:
    ```sh
-   node "<skill>/assets/manage.mjs" check --dir gold_traces --record
+   node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" check --dir gold_traces --record
    ```
    Then reuse its fresh recordings in a dry run:
    ```sh
-   node "<skill>/assets/manage.mjs" update --dir gold_traces --dry-run
+   node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" update --dir gold_traces --dry-run
    ```
    It marks each trace `bless` (behavior changed), `seed` (new entry), or counts it
    `unchanged`. The digest excludes timing/value jitter, so a `bless` is a real change.
@@ -314,7 +320,7 @@ if the release touched no traceable application code.**
    step 2's recordings); `update` re-blesses every changed trace and leaves the rest
    byte-identical, or scope it with `--only`:
    ```sh
-   node "<skill>/assets/manage.mjs" update --dir gold_traces [--only <reviewed_test>]
+   node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" update --dir gold_traces [--only <reviewed_test>]
    ```
 
 4. **Commit**, staging only what genuinely changed (manifest edits, newly-blessed

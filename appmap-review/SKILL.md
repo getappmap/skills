@@ -1,3 +1,8 @@
+---
+name: appmap-review
+description: Review the runtime-behavior change between two revisions using the committed gold traces. Archives and compares each side with the AppMap CLI, then interprets the result into a findings-first report covering unintended side effects, missing security checks, SQL and HTTP risks, and coverage gaps. Use when asked to review a branch, PR, or release for behavioral change, or to decide which changed gold traces to bless. Needs gold traces maintained by appmap-gold-traces.
+---
+
 # Skill: AppMap Behavioral Review
 
 Review the **runtime-behavior change** between two revisions and write an

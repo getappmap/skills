@@ -59,9 +59,10 @@ git checkout -b appmap-base <BASE_SHA>
 ## Phase 2 — Recording setup on BASE
 
 Run **appmap-setup** on the checked-out BASE branch. It leaves behind three
-commits, which it names "config", "exclusions", and "docs". The docs commit
-holds `docs/appmap.md` with the working record commands, imported from
-`CLAUDE.md`. Note the three commit SHAs; the replay phase cherry-picks them.
+commits, which it names "config", "exclusions", and "commands". The commands
+commit holds `gold_traces/manifest.yaml` with the working record commands in
+its `commands` block and an empty `entries` list. Note the three commit SHAs;
+the replay phase cherry-picks them.
 
 ## Phase 3 — Gold traces on BASE (commit "gold baseline")
 
@@ -72,10 +73,9 @@ feature (DAO and service paths with SQL beat granular unit tests). Use the
 engine's `discover` for every `appmap_path`, and give each entry an `expect`
 list of the code objects it must execute. Run `check --record`; it records
 twice, fails on empty traces, missing `expect` coverage, or run-to-run drift,
-and warns on large or repetitive traces. Then seed with `update`. Base the
-manifest's `commands` on `docs/appmap.md`: its framework name and launcher go
-into `commands.framework` and `commands.runner` unchanged, and `plan` shows the
-resulting record commands before anything runs. Commit.
+and warns on large or repetitive traces. Then seed with `update`. The
+manifest's `commands` block is already filled by the setup's "commands" commit;
+`plan` shows the resulting record commands before anything runs. Commit.
 
 ## Phase 4 — Replay onto HEAD
 
@@ -83,12 +83,12 @@ resulting record commands before anything runs. Commit.
 git checkout -b appmap-head <HEAD_SHA>
 git cherry-pick <config>          # recording config
 git cherry-pick <exclusions>      # appmap.yml exclusions
-git cherry-pick <docs>            # docs/appmap.md + the CLAUDE.md import line
+git cherry-pick <commands>        # gold_traces/manifest.yaml (commands only) + the CLAUDE.md pointer line
 git cherry-pick <gold baseline>   # needed for the review step
 ```
 
-The docs commit conflicts if `CLAUDE.md` changed between BASE and HEAD. Keep
-HEAD's content and re-add the `@docs/appmap.md` line.
+The commands commit conflicts if `CLAUDE.md` changed between BASE and HEAD.
+Keep HEAD's content and re-add the pointer line.
 
 Verify recording still works at HEAD: re-run the unit recording and the
 integration recording, including any test the feature added.

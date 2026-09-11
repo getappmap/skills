@@ -7,9 +7,8 @@
 # appmap.yml puts them (its directory + its appmap_dir). So place gold_traces
 # inside the directory you want commands to run from, within an AppMap project.
 #
-# YAML notes: read by a minimal parser. Block maps/lists only (no flow collections
-# or anchors). No `#` comments on the same line as a value. Quote any value that
-# contains a colon-followed-by-space.
+# Standard YAML (read with js-yaml): comments anywhere, flow lists, anchors all
+# work. Quote a value that starts with a special character or contains ": ".
 
 schema_version: 2
 
@@ -83,20 +82,14 @@ commands:
 #   appmap_path  recording path relative to the project's appmap_dir — get it
 #                from the engine's `discover` command; don't guess it
 #   summary      short human context for what the trace demonstrates
-#   expect       code objects that must occur in the recording. Use AppMap ids:
-#                MyClass#instance_method or MyClass.class_method.
-#   expect_labels optional semantic labels that must occur in the recording.
 #
-# Curation: prefer one deterministic, lean recording per release-critical subsystem
-# over many near-identical ones. Reuse an existing test before synthesizing one.
+# What a trace covers is read from the recording itself, so there is nothing
+# else to declare. Curation: one deterministic, lean recording per release-
+# critical subsystem, added only when `discover` shows it runs something no
+# committed trace runs. Reuse an existing test before writing one.
 entries:
   - feature: auth
     test_file: tests/test_auth.py
     test_name: test_login_verifies_token_and_mints_session
     appmap_path: pytest/test_login_verifies_token_and_mints_session.appmap.json
     summary: Full auth happy path from token verification through session minting.
-    expect:
-      - "AuthService#verify_token"
-      - "SessionService#mint"
-    expect_labels:
-      - security.authentication

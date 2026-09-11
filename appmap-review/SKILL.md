@@ -216,8 +216,21 @@ change"). A change that claims to preserve behavior but moves a trace is a findi
 
 **2 — Coverage Matrix.** For each feature, list the gold/manifest tests that exercise
 it. ✅ covered; ❌ **uncovered** when a behavior that should be guarded has no trace —
-especially a security-sensitive path with no *negative* test. For each gap, emit the
-command to record the missing test.
+especially a security-sensitive path with no *negative* test. Decide "covered" from
+the recordings, not from test names, in two steps. First, the compare: a trace that
+changed runs the code that changed, so every feature behind a changed trace is
+covered by that trace. Second, for a feature whose traces did not change, ask the
+gold-traces engine whether any baseline runs its code:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manage.mjs" covers --dir gold_traces --name <ClassName>
+```
+
+A hit is ✅ (the change did not alter the call shape). A miss, after trying the
+class name alone, is ❌. For each ❌, name the test to `discover`, found the way
+**appmap-gold-traces** describes in "Finding the test for a code path"; if no test
+exists, say that a focused test is needed and what it must drive. New entries are
+added only when `discover` shows the recording runs something no baseline runs.
 
 **3 — Suggested Labels.** For functions that **changed in the compare but carry no
 label**, suggest one so the next review can interpret them. Primary-language
@@ -440,8 +453,9 @@ Numbered, one line each: **bold lead-in** naming the feature, then what it does.
 | <client-only/untraced> | — | — |
 
 (✅ a gold/unit trace exercises it; ❌ a behavior that *should* be guarded isn't —
-especially a security path with no negative test; — out of trace scope.) One code
-block with the record command(s) that close the ❌ gaps.
+especially a security path with no negative test; — out of trace scope.) For each
+❌, one line saying how to close it: the existing test to `discover`, or, if none
+runs the path, the focused test to write and the entry point it must drive.
 
 ### Suggested Labels
 

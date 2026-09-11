@@ -21,14 +21,18 @@ of the CLI's working artifacts. Functions on paths worth interpreting carry AppM
 
 ## Maintenance (appmap-gold-traces): curate → record → bless
 
-Re-record the gold tests on a release and **bless** the baselines. The engine (`assets/manage.mjs`) provides four maintenance operations:
+Re-record the gold tests on a release and **bless** the baselines. The engine (`assets/manage.mjs`) provides five maintenance operations:
 
 - **plan** — show the record commands the engine would run. The manifest names the
   test framework (`pytest`, `rspec`, `jest`, `maven`, ...) and the engine builds the
   commands, batching the gold set into as few runner invocations as that framework
   allows.
 - **check** — report size/shape/coverage and, when recording, verify two-run stability.
-- **discover** — record one candidate, report its path, and assess its shape.
+- **discover** — record one candidate, report its path, assess its shape, and say
+  what it runs that no committed baseline runs.
+- **covers** — list the committed baselines (or, with `--fresh`, the recordings under
+  `appmap_dir`) that run a code object whose id contains a given name. Answers "does
+  a gold trace already run this?" without recording anything.
 - **update** (digest-gated) — optionally record, then re-bless a baseline only when its behavioral **digest**
   changed (raw appmaps differ on every recording — timestamps, ids — so a blind copy
   would churn git), and seed baselines for new entries. Unchanged baselines stay

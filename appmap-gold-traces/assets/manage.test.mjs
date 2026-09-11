@@ -18,7 +18,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parseYaml, diagramDigest, changedAppmaps, assessAppMap } from './manage.mjs';
+import {
+  parseYaml, diagramDigest, changedAppmaps, assessAppMap, coverageOf, coverageDelta,
+} from './manage.mjs';
 
 const MANAGE = fileURLToPath(new URL('./manage.mjs', import.meta.url));
 
@@ -61,8 +63,10 @@ fs.mkdirSync('tmp/appmap/pytest', { recursive: true });
 for (const arg of process.argv.slice(2)) {
   const match = /^(.+)::(.+)$/.exec(arg);
   if (!match || match[2] === 'no_recording') continue;
+  // A test named dup_<x> executes the same code object as <x>: a near-duplicate.
+  const method = match[2].replace(/^dup_/, '');
   fs.writeFileSync('tmp/appmap/pytest/' + match[2] + '.appmap.json',
-    JSON.stringify({ events: [{ event: 'call', defined_class: 'App', method_id: match[2] }], stamp: Date.now(), pad: Math.random() }));
+    JSON.stringify({ events: [{ event: 'call', defined_class: 'App', method_id: method }], stamp: Date.now(), pad: Math.random() }));
 }
 `,
   );
@@ -93,6 +97,18 @@ function batchEntry(name) {
     appmap_path: pytest/${name}.appmap.json
     summary: ${name}
 `;
+}
+
+// A committed baseline whose only call is App#<method>.
+function writeBaseline(dir, name, method = name) {
+  const file = path.join(dir, `gold_traces/baseline/appmaps/pytest/${name}.appmap.json`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    events: [
+      { event: 'call', defined_class: 'App', method_id: method },
+      ...Array.from({ length: 9 }, () => ({ event: 'return' })),
+    ],
+  }));
 }
 
 function runEngine(cwd, ...args) {
@@ -279,12 +295,167 @@ test('framework: batch_size splits the gold set into several runs', (t) => {
   assert.match(rejected.stderr, /batch_size' must be a positive integer/);
 });
 
+test('every command prints an upgrade note when the manifest is schema 1 or unversioned', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS, entries: batchEntry('alpha') });
+  const versioned = runEngine(dir, 'plan', '--dir', 'gold_traces');
+  assert.equal(versioned.status, 0, versioned.stderr);
+  assert.match(versioned.stderr, /schema_version 1\. Upgrade it to 2/);
+
+  const manifest = path.join(dir, 'gold_traces/manifest.yaml');
+  fs.writeFileSync(manifest, fs.readFileSync(manifest, 'utf8').replace('schema_version: 1\n', ''));
+  const unversioned = runEngine(dir, 'plan', '--dir', 'gold_traces');
+  assert.equal(unversioned.status, 0, unversioned.stderr);
+  assert.match(unversioned.stderr, /no schema_version line/);
+
+  fs.writeFileSync(manifest, `schema_version: 2\n${fs.readFileSync(manifest, 'utf8')}`);
+  const current = runEngine(dir, 'plan', '--dir', 'gold_traces');
+  assert.equal(current.status, 0, current.stderr);
+  assert.doesNotMatch(current.stderr, /schema_version/);
+});
+
 test('plan: a record template lists one run per entry', (t) => {
   const dir = makeFixture(t, { entries: batchEntry('alpha') + batchEntry('beta') });
   const result = runEngine(dir, 'plan', '--dir', 'gold_traces');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /2 record run\(s\) for 2 entries via commands.record template/);
   assert.match(result.stdout, /node "tests\/test_demo\.py" alpha/);
+});
+
+// --- coverage: the set must grow, not repeat ----------------------------------
+
+test('assessAppMap: reports SQL tables and HTTP routes for the coverage delta', () => {
+  const assessment = assessAppMap({
+    events: [
+      { event: 'call', sql_query: { sql: 'SELECT * FROM coupons c JOIN carts ON c.cart_id = carts.id' } },
+      { event: 'call', sql_query: { sql: 'insert into "orders" (id) values (1)' } },
+      { event: 'call', http_server_request: { request_method: 'POST', path_info: '/carts/1/coupons', normalized_path_info: '/carts/:id/coupons' } },
+    ],
+  }, 100);
+  assert.deepEqual(assessment.sql_tables, ['carts', 'coupons', 'orders']);
+  assert.deepEqual(assessment.http_routes, ['POST /carts/:id/coupons']);
+});
+
+test('coverageDelta: reports what a candidate adds and its closest existing entry', () => {
+  const make = (codeObjects, labels = [], tables = [], routes = []) => coverageOf({
+    project_code_objects: codeObjects, all_code_objects: codeObjects, labels, sql_tables: tables, http_routes: routes,
+  }, ['src']);
+  const existing = [
+    { name: 'checkout', coverage: make(['Cart#total', 'Order#place'], ['payment.charge'], ['orders']) },
+    { name: 'login', coverage: make(['Auth#login'], ['security.authentication'], ['users']) },
+  ];
+  const coupon = coverageDelta(make(['Cart#total', 'Coupon#apply'], ['payment.charge', 'pricing.discount'], ['orders', 'coupons']), existing);
+  assert.equal(coupon.isNew, true);
+  assert.deepEqual(coupon.added, { code_objects: ['Coupon#apply'], labels: ['pricing.discount'], tables: ['coupons'], routes: [] });
+  assert.deepEqual(coupon.mostSimilar, { name: 'checkout', overlap: 0.5 });
+
+  const repeat = coverageDelta(make(['Cart#total'], ['payment.charge'], ['orders']), existing);
+  assert.equal(repeat.isNew, false);
+  assert.deepEqual(repeat.mostSimilar, { name: 'checkout', overlap: 1 });
+});
+
+test('check: warns when a trace covers nothing the earlier traces do not', (t) => {
+  const dir = makeFixture(t, {
+    commands: BATCH_COMMANDS,
+    entries: batchEntry('alpha') + batchEntry('beta'),
+  });
+  writeBaseline(dir, 'alpha');
+  writeBaseline(dir, 'beta', 'alpha');   // beta's recording only calls App#alpha
+  const result = runEngine(dir, 'check', '--dir', 'gold_traces');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /WARN beta: runs no code object, label, SQL table, or HTTP route that the earlier entries do not \(closest: alpha, 100% overlap\)/);
+  assert.match(result.stdout, /Keep it only if it drives a branch inside those functions that alpha does not/);
+  assert.doesNotMatch(result.stdout, /WARN alpha: runs no code object/);
+});
+
+test('check: a manifest that still carries expect fields gets a note to delete them', (t) => {
+  const dir = makeFixture(t, {
+    commands: BATCH_COMMANDS,
+    entries: `${batchEntry('alpha')}    expect:\n      - "App#alpha"\n    expect_labels:\n      - security.authentication\n`,
+  });
+  writeBaseline(dir, 'alpha');
+  const result = runEngine(dir, 'check', '--dir', 'gold_traces');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /'expect' and 'expect_labels' are no longer used; delete them from alpha/);
+});
+
+test('covers: lists the baselines that run a matching code object, spelled as recorded', (t) => {
+  const dir = makeFixture(t, {
+    commands: BATCH_COMMANDS,
+    entries: batchEntry('alpha') + batchEntry('beta'),
+  });
+  writeBaseline(dir, 'alpha');
+  writeBaseline(dir, 'beta');
+  const hit = runEngine(dir, 'covers', '--dir', 'gold_traces', '--name', 'alph');
+  assert.equal(hit.status, 0, hit.stderr);
+  assert.match(hit.stdout, /alpha  \(tests\/test_demo.py\)\n\s+App#alpha/);
+  assert.doesNotMatch(hit.stdout, /beta  \(/);
+  assert.match(hit.stdout, /1 of 2 baseline\(s\) run a code object matching 'alph'/);
+
+  const miss = runEngine(dir, 'covers', '--dir', 'gold_traces', '--name', 'Gamma#run');
+  assert.equal(miss.status, 0, miss.stderr);
+  assert.match(miss.stdout, /No baseline runs a code object matching 'Gamma#run' \(2 searched\)/);
+  assert.match(miss.stdout, /try a shorter name/);
+
+  const noName = runEngine(dir, 'covers', '--dir', 'gold_traces');
+  assert.equal(noName.status, 1);
+  assert.match(noName.stderr, /covers requires --name/);
+});
+
+test('covers: an entry without a committed baseline is skipped, and an empty set says so', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS, entries: batchEntry('alpha') });
+  const result = runEngine(dir, 'covers', '--dir', 'gold_traces', '--name', 'alpha');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /No baselines to search/);
+});
+
+test('covers --fresh: searches the recordings under appmap_dir and names each by its metadata', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS });
+  const empty = runEngine(dir, 'covers', '--dir', 'gold_traces', '--name', 'Flow', '--fresh');
+  assert.equal(empty.status, 0, empty.stderr);
+  assert.match(empty.stdout, /No recordings to search/);
+
+  const write = (rel, appmap) => {
+    const file = path.join(dir, 'tmp/appmap', rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(appmap));
+  };
+  write('requests/flows.appmap.json', {
+    metadata: { name: 'creates a flow', source_location: 'spec/requests/flows_spec.rb:12' },
+    events: [{ event: 'call', defined_class: 'FlowService', method_id: 'create' }, { event: 'call', defined_class: 'FlowDao', method_id: 'insert' }],
+  });
+  write('unit/dao.appmap.json', {
+    metadata: { name: 'inserts' },
+    events: [{ event: 'call', defined_class: 'FlowDao', method_id: 'insert' }],
+  });
+  write('unit/other.appmap.json', { events: [{ event: 'call', defined_class: 'Cart', method_id: 'total' }] });
+
+  const result = runEngine(dir, 'covers', '--dir', 'gold_traces', '--name', 'FlowDao', '--fresh');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /requests\/flows.appmap.json  \(creates a flow  spec\/requests\/flows_spec.rb:12\)\n\s+FlowDao#insert/);
+  assert.match(result.stdout, /unit\/dao.appmap.json  \(inserts\)\n\s+FlowDao#insert/);
+  assert.doesNotMatch(result.stdout, /other.appmap.json/);
+  assert.match(result.stdout, /2 of 3 recording\(s\) run a code object matching 'FlowDao'/);
+});
+
+test('discover: reports the coverage a candidate adds beyond the committed set, facts only', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS, entries: batchEntry('alpha') });
+  writeBaseline(dir, 'alpha');
+  const fresh = runEngine(dir, 'discover', '--dir', 'gold_traces', '--test-file', 'tests/test_demo.py', '--test-name', 'gamma');
+  assert.equal(fresh.status, 0, fresh.stderr);
+  assert.match(fresh.stdout, /adds coverage no existing entry has: code objects App#gamma \(closest: alpha, 0%/);
+  assert.doesNotMatch(fresh.stdout, /verdict/);
+
+  const dup = runEngine(dir, 'discover', '--dir', 'gold_traces', '--test-file', 'tests/test_demo.py', '--test-name', 'dup_alpha');
+  assert.equal(dup.status, 0, dup.stderr);
+  assert.match(dup.stdout, /adds no coverage beyond the existing entries \(closest: alpha, 100%/);
+  assert.doesNotMatch(dup.stdout, /verdict|expect/);
+});
+
+test('discover: the first entry has nothing to compare against', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS });
+  const result = runEngine(dir, 'discover', '--dir', 'gold_traces', '--test-file', 'tests/test_demo.py', '--test-name', 'gamma');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /coverage: first entry/);
 });
 
 // --- suitability assessment ------------------------------------------------
@@ -300,9 +471,6 @@ test('assessAppMap: reports useful shape metrics', () => {
       { event: 'call', sql_query: { sql: 'select 1' } },
       ...Array.from({ length: 17 }, () => ({ event: 'return' })),
     ],
-  }, {
-    expect: ['Auth#login'],
-    expect_labels: ['security.authentication'],
   }, 4096, ['src']);
 
   assert.equal(assessment.events, 20);
@@ -311,30 +479,37 @@ test('assessAppMap: reports useful shape metrics', () => {
   assert.equal(assessment.sql_queries, 1);
   assert.deepEqual(assessment.labels, ['security.authentication']);
   assert.deepEqual(assessment.project_code_objects, ['Auth#login']);
+  assert.deepEqual(assessment.project_classes, ['Auth']);
   assert.deepEqual(assessment.errors, []);
+  // One class, but it reaches SQL and HTTP: not unit-test shaped.
+  assert.doesNotMatch(assessment.warnings.join(' '), /unit test/);
 });
 
-test('assessAppMap: rejects empty traces and missing required coverage', () => {
-  const empty = assessAppMap({ events: [] }, {}, 100);
+test('assessAppMap: rejects empty traces', () => {
+  const empty = assessAppMap({ events: [] }, 100);
   assert.match(empty.errors.join(' '), /zero events/);
   assert.match(empty.errors.join(' '), /no function/);
-
-  const missing = assessAppMap({
-    classMap: [],
-    events: [{ event: 'call', defined_class: 'Auth', method_id: 'login', static: false }],
-  }, {
-    expect: ['Policy#check!'],
-    expect_labels: ['security.authorization'],
-  }, 100);
-  assert.match(missing.errors.join(' '), /missing required code objects: Policy#check!/);
-  assert.match(missing.errors.join(' '), /missing required labels: security.authorization/);
 });
 
-test('assessAppMap: requires manifest entries to declare expected coverage', () => {
-  const assessment = assessAppMap({
-    events: [{ event: 'call', defined_class: 'Auth', method_id: 'login', static: false }],
-  }, { test_name: 'login works', require_expect: true }, 100);
-  assert.match(assessment.errors.join(' '), /has no expect coverage declaration/);
+test('assessAppMap: warns when a recording stays inside one class and never reaches SQL or HTTP', () => {
+  const call = (cls, method, file) => ({ event: 'call', defined_class: cls, method_id: method, static: false, path: file });
+  const returns = Array.from({ length: 12 }, () => ({ event: 'return' }));
+
+  const unit = assessAppMap({ events: [call('Cart', 'total', 'src/cart.js'), call('Cart', 'add', 'src/cart.js'), ...returns] }, 100, ['src']);
+  assert.match(unit.warnings.join(' '), /runs only one project class \(Cart\) and makes no SQL or HTTP calls: reads like a unit test/);
+
+  const libraryOnly = assessAppMap({ events: [call('Logger', 'write', 'node_modules/logger/index.js'), ...returns] }, 100, ['src']);
+  assert.match(libraryOnly.warnings.join(' '), /runs no project class and makes no SQL or HTTP calls/);
+
+  const layered = assessAppMap({ events: [call('Cart', 'total', 'src/cart.js'), call('Pricing', 'apply', 'src/pricing.js'), ...returns] }, 100, ['src']);
+  assert.doesNotMatch(layered.warnings.join(' '), /unit test/);
+
+  const withSql = assessAppMap({ events: [call('Cart', 'total', 'src/cart.js'), { event: 'call', sql_query: { sql: 'select 1' } }, ...returns] }, 100, ['src']);
+  assert.doesNotMatch(withSql.warnings.join(' '), /unit test/);
+
+  // No packages configured: every class counts as project code.
+  const unconfigured = assessAppMap({ events: [call('Cart', 'total', 'src/cart.js'), call('Pricing', 'apply', 'src/pricing.js'), ...returns] }, 100, []);
+  assert.doesNotMatch(unconfigured.warnings.join(' '), /unit test/);
 });
 
 test('assessAppMap: warns on large, repetitive traces', () => {
@@ -342,9 +517,32 @@ test('assessAppMap: warns on large, repetitive traces', () => {
     events: Array.from({ length: 400 }, () => (
       { event: 'call', defined_class: 'Kernel', method_id: 'eval', static: false }
     )),
-  }, {}, 600 * 1024);
+  }, 600 * 1024);
   assert.match(assessment.warnings.join(' '), /is large/);
   assert.match(assessment.warnings.join(' '), /400x Kernel#eval/);
+});
+
+test('assessAppMap: a dotted package name matches the source path of a Java or Python file', () => {
+  const assessment = assessAppMap({
+    events: [
+      { event: 'call', defined_class: 'org.finos.waltz.data.FlowDao', method_id: 'insert', path: 'waltz-data/src/main/java/org/finos/waltz/data/FlowDao.java' },
+      { event: 'call', defined_class: 'org.finos.waltz.service.FlowService', method_id: 'add', path: 'waltz-service/src/main/java/org/finos/waltz/service/FlowService.java' },
+      { event: 'call', defined_class: 'org.jooq.DSL', method_id: 'select', path: 'org/jooq/DSL.java' },
+      { event: 'call', defined_class: 'myapp.core.Cart', method_id: 'total', path: 'myapp/core/cart.py' },
+      { event: 'call', defined_class: 'requests.Session', method_id: 'get', path: '/opt/venv/lib/requests/sessions.py' },
+    ],
+  }, 100, ['org.finos.waltz', 'myapp.core']);
+  assert.deepEqual(assessment.project_code_objects, [
+    'myapp.core.Cart#total', 'org.finos.waltz.data.FlowDao#insert', 'org.finos.waltz.service.FlowService#add',
+  ]);
+  assert.deepEqual(assessment.project_classes, ['myapp.core.Cart', 'org.finos.waltz.data.FlowDao', 'org.finos.waltz.service.FlowService']);
+});
+
+test('coverageOf: falls back to every code object when the package filter matched nothing', () => {
+  const unmatched = coverageOf({ project_code_objects: [], all_code_objects: ['A#run', 'B#run'], labels: [], sql_tables: [], http_routes: [] }, ['com.example']);
+  assert.deepEqual([...unmatched.code_objects], ['A#run', 'B#run']);
+  const matched = coverageOf({ project_code_objects: ['A#run'], all_code_objects: ['A#run', 'B#run'], labels: [], sql_tables: [], http_routes: [] }, ['com.example']);
+  assert.deepEqual([...matched.code_objects], ['A#run']);
 });
 
 test('assessAppMap: path dot does not classify absolute dependencies as project code', () => {
@@ -353,7 +551,7 @@ test('assessAppMap: path dot does not classify absolute dependencies as project 
       { event: 'call', defined_class: 'App', method_id: 'run', path: 'src/app.js' },
       { event: 'call', defined_class: 'Gem', method_id: 'run', path: '/opt/gems/gem.rb' },
     ],
-  }, {}, 100, ['.', '/repo']);
+  }, 100, ['.', '/repo']);
   assert.deepEqual(assessment.project_code_objects, ['App#run']);
 });
 
@@ -397,14 +595,47 @@ test('parseYaml: reads a top-level block list (the expand option)', () => {
   assert.deepEqual(cfg.expand, ['package:a/b', 'package:c/d']);
 });
 
-test('parseYaml: reads nested expected code objects', () => {
+test('parseYaml: reads a block list nested inside an entry', () => {
   const cfg = parseYaml(`entries:
   - test_name: login
-    expect:
-      - "Auth#login"
-      - Session.create
+    tags:
+      - "auth#core"
+      - session.create
 `);
-  assert.deepEqual(cfg.entries[0].expect, ['Auth#login', 'Session.create']);
+  assert.deepEqual(cfg.entries[0].tags, ['auth#core', 'session.create']);
+});
+
+test('parseYaml: standard YAML — same-line comments, flow collections, anchors', () => {
+  const cfg = parseYaml(`schema_version: 2  # current
+commands: {framework: pytest, args: -q}
+entries: []
+expand: &e ["package:a/b"]
+allow_values: *e
+`);
+  assert.equal(cfg.schema_version, 2);
+  assert.deepEqual(cfg.commands, { framework: 'pytest', args: '-q' });
+  assert.deepEqual(cfg.entries, []);
+  assert.deepEqual(cfg.allow_values, ['package:a/b']);
+});
+
+test('parseYaml: a syntax error names the file', () => {
+  assert.throws(() => parseYaml('entries:\n  - a: [\n', 'gold_traces/manifest.yaml'), /Invalid YAML in gold_traces\/manifest.yaml/);
+});
+
+test('manifest: an appmap.yml with same-line comments and gem entries is read as YAML', (t) => {
+  const dir = makeFixture(t, { commands: BATCH_COMMANDS, entries: batchEntry('alpha') });
+  fs.writeFileSync(path.join(dir, 'appmap.yml'), `name: fixture  # the app
+appmap_dir: tmp/appmap
+packages:
+  - path: src   # project code
+    exclude:
+      - "Foo#bar"  # noisy
+  - gem: rails
+`);
+  writeBaseline(dir, 'alpha');
+  const result = runEngine(dir, 'check', '--dir', 'gold_traces');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Checked 1 baseline trace/);
 });
 
 test('parseYaml: preserves a quoted list scalar containing colon-space', () => {
@@ -427,7 +658,7 @@ test('manifest: rejects unsupported schema versions', (t) => {
   assert.match(future.stderr, /Unsupported gold-traces schema_version/);
 });
 
-test('manifest: schema version 1 remains compatible without expect', (t) => {
+test('manifest: a schema version 1 manifest still checks', (t) => {
   const dir = makeFixture(t, {
     entries: `  - feature: legacy
     test_file: recorder.mjs

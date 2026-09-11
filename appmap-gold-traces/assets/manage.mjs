@@ -2,7 +2,8 @@
 
 // Gold-traces maintenance for the appmap-gold-traces skill.
 //
-// Config-driven and dependency-free: one file, <dir>/manifest.yaml, describes the whole
+// Config-driven and zero-install (the YAML reader is vendored): one file,
+// <dir>/manifest.yaml, describes the whole
 // gold set — the record commands and the curated recording list. Run from the target
 // project root:
 //
@@ -10,9 +11,11 @@
 //   node <skill>/assets/manage.mjs update --dir gold_traces --only test_foo --dry-run
 //   node <skill>/assets/manage.mjs discover --dir gold_traces --test-file tests/test_foo.py --test-name test_bar
 //   node <skill>/assets/manage.mjs check --dir gold_traces --record
+//   node <skill>/assets/manage.mjs covers --dir gold_traces --name LogicalFlowDao
 //
-// It records the gold tests, checks trace suitability, blesses baselines, and
-// discovers a test's appmap_path. Diffing and interpreting a change
+// It records the gold tests, checks trace suitability, blesses baselines,
+// discovers a test's appmap_path, and answers which committed baseline runs a
+// piece of code. Diffing and interpreting a change
 // (regression? unintended side effect?) is the appmap-review skill's job, not this
 // engine's.
 //
@@ -41,6 +44,7 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { describeFrameworks, frameworkNames, planRecordCommands, resolveRunner } from './frameworks.mjs';
+import { load as loadYaml } from './vendor/js-yaml.mjs';
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
@@ -71,8 +75,34 @@ async function main() {
   const tempRoot = path.join(appmapYmlDir, '.appmap', 'gold-traces');
   const env = { ...paths, config, workingDir, appmapYmlDir, appmapsDir, packagePaths, tempRoot };
 
+  // An old manifest still works; say so once per run and point at the upgrade
+  // recipe (a short hand edit, described in the appmap-gold-traces skill).
+  if (config.schema_version < 2) {
+    console.error(
+      `note: ${paths.manifestPath} is schema_version ${config.schema_version}` +
+        `${config.versioned ? '' : ' (no schema_version line)'}. Upgrade it to 2: ` +
+        `set schema_version and replace commands.record with commands.framework ` +
+        `(see the appmap-gold-traces skill, "Maintain").`,
+    );
+  }
+  // `expect` and `expect_labels` were dropped: the recordings say what a trace
+  // runs, and the compare says what changed. Say so once so the fields get deleted.
+  const legacy = config.entries.filter((entry) => entry.expect != null || entry.expect_labels != null);
+  if (legacy.length > 0) {
+    const named = legacy.slice(0, 3).map((entry) => entry.test_name).join(', ');
+    const more = legacy.length > 3 ? ` and ${legacy.length - 3} more` : '';
+    console.error(
+      `note: 'expect' and 'expect_labels' are no longer used; delete them from ` +
+        `${named}${more} in ${paths.manifestPath}.`,
+    );
+  }
+
   if (command === 'discover') {
     await discoverAppmapPath(env, options);
+    return;
+  }
+  if (command === 'covers') {
+    await coversCommand(env, options);
     return;
   }
 
@@ -101,8 +131,9 @@ async function main() {
   }
   throw new Error(
     `Unknown command: ${command}. This engine maintains baselines ('update'), checks ` +
-      `trace suitability ('check'), finds a test's appmap_path ('discover'), and ` +
-      `shows the record commands it would run ('plan'). ` +
+      `trace suitability ('check'), finds a test's appmap_path ('discover'), ` +
+      `answers which baseline runs a piece of code ('covers'), ` +
+      `and shows the record commands it would run ('plan'). ` +
       `To diff/review a change, use the ` +
       `appmap-review skill.`,
   );
@@ -117,6 +148,8 @@ function parseArgs(args) {
     only: [],
     testFile: null,
     testName: null,
+    name: null,
+    fresh: false,
   };
 
   let command = null;
@@ -161,6 +194,15 @@ function parseArgs(args) {
       options.testName = args[index] ?? null;
       continue;
     }
+    if (arg === '--name') {
+      index += 1;
+      options.name = args[index] ?? null;
+      continue;
+    }
+    if (arg === '--fresh') {
+      options.fresh = true;
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -172,6 +214,7 @@ function printHelp() {
   node <skill>/assets/manage.mjs update   [--dir DIR] [--only TEST] [--record] [--dry-run]
   node <skill>/assets/manage.mjs check    [--dir DIR] [--only TEST] [--record]
   node <skill>/assets/manage.mjs discover [--dir DIR] --test-file FILE --test-name NAME
+  node <skill>/assets/manage.mjs covers   [--dir DIR] --name NAME [--fresh]
   node <skill>/assets/manage.mjs plan     [--dir DIR] [--only TEST]
 
 Maintains the committed gold-trace baselines. Diffing/reviewing a change is the
@@ -180,11 +223,19 @@ appmap-review skill's job, not this engine's.
   update    Re-bless baselines, but only the traces whose behavior changed
             (digest-gated, so untouched baselines stay byte-identical). Seeds a
             baseline for any entry that doesn't have one yet.
-  check     Report size, shape, repetition, and required code-object coverage.
-            With --record, record twice and fail if the behavioral digest drifts.
+  check     Report size, shape, and repetition, and warn when a trace covers
+            nothing the earlier entries do not. With --record, record twice and
+            fail if the behavioral digest drifts.
   discover  Find a test's appmap_path for a new manifest entry: records the one
-            test, checks each recording's shape, and reports which appmap files
-            the run produced, plus a paste-ready entry stub.
+            test, checks each recording's shape, reports which appmap files the
+            run produced and what they run that no committed baseline runs, plus
+            a paste-ready entry stub.
+  covers    List the committed baselines that run a code object whose id
+            contains NAME (a class or method name), with the ids as the
+            recordings spell them. With --fresh, search the recordings under
+            appmap_dir instead (after recording a test directory) and print
+            each match's test name and source location. No recording, no
+            shell tools.
   plan      Print the record command(s) the engine would run for the entries,
             without running them.
 
@@ -195,6 +246,8 @@ Options:
   --dry-run           update: report what would be blessed/seeded without writing anything.
   --test-file FILE    discover: the test file, as the record command needs it.
   --test-name NAME    discover: the test function/case name.
+  --name NAME         covers: part of a class or method name to look for.
+  --fresh             covers: search the recordings under appmap_dir, not the baselines.
   --help              Show this help.
 
 Recording is configured in manifest.yaml under 'commands', one of two ways:
@@ -218,11 +271,12 @@ async function loadManifest(manifestPath) {
   if (raw === null) {
     throw new Error(`Missing gold-traces manifest: ${manifestPath}\nBootstrap the gold-traces directory first (see the appmap-gold-traces skill).`);
   }
-  const manifest = parseYaml(raw);
+  const manifest = parseYaml(raw, manifestPath);
   if (!manifest || typeof manifest !== 'object') {
     throw new Error(`Invalid gold-traces manifest: ${manifestPath}`);
   }
   const commands = manifest.commands ?? {};
+  const versioned = manifest.schema_version != null;
   const schemaVersion = Number(manifest.schema_version ?? 1);
   if (!Number.isInteger(schemaVersion) || ![1, 2].includes(schemaVersion)) {
     throw new Error(`Unsupported gold-traces schema_version '${manifest.schema_version}' in ${manifestPath}; expected 1 or 2.`);
@@ -244,6 +298,8 @@ async function loadManifest(manifestPath) {
     throw new Error(`'commands.batch_size' must be a positive integer in ${manifestPath}.`);
   }
   return {
+    schema_version: schemaVersion,
+    versioned,
     // Two ways to record. `framework` names a runner the engine knows (see
     // frameworks.mjs), so the manifest carries only the launcher and flags and the
     // engine batches tests per run. `record` is a full per-test shell template for
@@ -266,7 +322,7 @@ async function loadManifest(manifestPath) {
     // small public vocabularies only (enum state/role names); never anything that
     // identifies a person or authenticates a request.
     allow_values: Array.isArray(manifest.allow_values) ? manifest.allow_values.map(String) : [],
-    entries: entries.map((entry) => ({ ...entry, require_expect: schemaVersion >= 2 })),
+    entries,
   };
 }
 
@@ -280,20 +336,20 @@ function stringifyEnv(envObject) {
 
 // Find the nearest-ancestor appmap.yml of the gold-traces dir. Its directory is the
 // AppMap project root (passed to the CLI as --directory) and its `appmap_dir` says
-// where recordings land — so neither needs to be configured. Read `appmap_dir` with a
-// top-level line scan rather than the minimal YAML parser, since a real appmap.yml has
-// `packages:`/`exclude:` structure the parser isn't meant for.
+// where recordings land — so neither needs to be configured. Its `packages` say
+// which source is the project's own (see isProjectCode); a Ruby config's `gem:`
+// entries have no `path` and are skipped.
 async function locateAppmap(startDir) {
   let dir = startDir;
   for (;;) {
     const raw = await readFileOrNull(path.join(dir, 'appmap.yml'));
     if (raw !== null) {
-      const match = raw.split(/\r?\n/).map((line) => /^appmap_dir:\s*(.+?)\s*$/.exec(line)).find(Boolean);
-      const appmapDir = match ? match[1].replace(/^["']|["']$/g, '') : 'tmp/appmap';
-      const configuredPackagePaths = raw.split(/\r?\n/)
-        .map((line) => /^\s*-\s+path:\s*(.+?)\s*$/.exec(line))
-        .filter(Boolean)
-        .map((packageMatch) => packageMatch[1].replace(/^["']|["']$/g, ''));
+      const appmapConfig = parseYaml(raw, path.join(dir, 'appmap.yml'));
+      const settings = appmapConfig && typeof appmapConfig === 'object' ? appmapConfig : {};
+      const appmapDir = settings.appmap_dir == null ? 'tmp/appmap' : String(settings.appmap_dir);
+      const configuredPackagePaths = (Array.isArray(settings.packages) ? settings.packages : [])
+        .filter((entry) => entry && typeof entry === 'object' && entry.path != null)
+        .map((entry) => String(entry.path));
       const packagePaths = [...new Set(configuredPackagePaths.flatMap((packagePath) => [
         packagePath,
         path.resolve(dir, packagePath),
@@ -384,7 +440,7 @@ async function validateFreshEntries(env, entries, produced) {
       failures.push(`${entry.test_name}: missing ${freshAppMap}.${hint}`);
       continue;
     }
-    const assessment = assessAppMap(await readJson(freshAppMap), entry, (await fs.stat(freshAppMap)).size, env.packagePaths);
+    const assessment = assessAppMap(await readJson(freshAppMap), (await fs.stat(freshAppMap)).size, env.packagePaths);
     printAssessment(entry, assessment, { details: false });
     failures.push(...assessment.errors.map((error) => `${entry.test_name}: ${error}`));
     if (assessment.errors.length === 0) sanitizeAppMap(env, freshAppMap);
@@ -397,13 +453,16 @@ async function validateFreshEntries(env, entries, produced) {
 async function checkBaselines(env, entries, options) {
   if (!options.record) {
     let failed = false;
+    const assessed = [];
     for (const entry of entries) {
       const appmapFile = baselineAppMapPath(env, entry);
       await assertExists(appmapFile, `Missing baseline for ${entry.test_name}`);
-      const assessment = assessAppMap(await readJson(appmapFile), entry, (await fs.stat(appmapFile)).size, env.packagePaths);
+      const assessment = assessAppMap(await readJson(appmapFile), (await fs.stat(appmapFile)).size, env.packagePaths);
       printAssessment(entry, assessment, { details: true });
       failed ||= assessment.errors.length > 0;
+      assessed.push({ name: entry.test_name, coverage: coverageOf(assessment, env.packagePaths) });
     }
+    printCoverageOverlaps(assessed);
     if (failed) throw new Error('Gold trace suitability check failed.');
     console.log(`Checked ${entries.length} baseline trace(s).`);
     return;
@@ -423,6 +482,7 @@ async function recordCheckPass(env, entries, sequenceName, printDetails) {
   const produced = await rerecordEntries(env, entries);
   const failures = [];
   const digests = new Map();
+  const assessed = [];
   const sequenceDir = tempSequenceDir(env, sequenceName);
   await ensureDir(sequenceDir);
   for (const entry of entries) {
@@ -432,14 +492,16 @@ async function recordCheckPass(env, entries, sequenceName, printDetails) {
       continue;
     }
     const appmapFile = currentAppMapPath(env, entry);
-    const assessment = assessAppMap(await readJson(appmapFile), entry, (await fs.stat(appmapFile)).size, env.packagePaths);
+    const assessment = assessAppMap(await readJson(appmapFile), (await fs.stat(appmapFile)).size, env.packagePaths);
     if (printDetails) printAssessment(entry, assessment, { details: true });
     failures.push(...assessment.errors.map((error) => `${entry.test_name}: ${error}`));
+    assessed.push({ name: entry.test_name, coverage: coverageOf(assessment, env.packagePaths) });
     if (assessment.errors.length === 0) {
       sanitizeAppMap(env, appmapFile);
       digests.set(entryKey(entry), diagramDigest(await readJson(await exportSequenceDiagram(env, appmapFile, sequenceDir, entry))));
     }
   }
+  if (printDetails) printCoverageOverlaps(assessed);
   if (failures.length > 0) {
     throw new Error(`Gold trace suitability check failed:\n  ${failures.join('\n  ')}`);
   }
@@ -547,10 +609,20 @@ async function discoverAppmapPath(env, options) {
   if (candidates.length > 1) {
     console.log(`\nMultiple recordings — pick the one that captures the behavior to guard (a curation call).`);
   }
+  // What the committed gold set already covers, so the candidate can be judged
+  // on what it ADDS, not on its own shape alone.
+  const existing = [];
+  for (const entry of env.config.entries) {
+    const baseline = baselineAppMapPath(env, entry);
+    if ((await readFileOrNull(baseline)) === null) continue;
+    const assessment = assessAppMap(await readJson(baseline), (await fs.stat(baseline)).size, env.packagePaths);
+    existing.push({ name: entry.test_name, coverage: coverageOf(assessment, env.packagePaths) });
+  }
   for (const candidate of candidates) {
     const appmapFile = path.join(env.appmapsDir, candidate);
-    const assessment = assessAppMap(await readJson(appmapFile), {}, (await fs.stat(appmapFile)).size, env.packagePaths);
+    const assessment = assessAppMap(await readJson(appmapFile), (await fs.stat(appmapFile)).size, env.packagePaths);
     printAssessment({ test_name: candidate }, assessment, { details: true });
+    printCoverageDelta(coverageDelta(coverageOf(assessment, env.packagePaths), existing), existing.length);
   }
   console.log(`\nManifest entry stub (paste under 'entries' in ${env.manifestPath}):
 
@@ -559,6 +631,58 @@ async function discoverAppmapPath(env, options) {
     test_name: ${options.testName}
     appmap_path: ${candidates[0]}
     summary: TODO`);
+}
+
+// ---------------------------------------------------------------------------
+// covers — which committed baseline runs a piece of code
+// ---------------------------------------------------------------------------
+//
+// Answers "does a gold trace already run X?" from the committed baselines: no
+// recording, no shell tools. Matches on part of a name and prints the ids as the
+// recordings spell them, so a misspelled name shows up as a near miss instead of
+// looking like a coverage gap. With --fresh it searches the recordings under
+// appmap_dir instead, the fallback after recording a whole test directory, and
+// names each match by the test name and source location in its metadata.
+
+async function coversCommand(env, options) {
+  if (!options.name) {
+    throw new Error('covers requires --name (part of a class or method name)');
+  }
+  const needle = options.name;
+  const what = options.fresh ? 'recording' : 'baseline';
+  const candidates = options.fresh
+    ? [...(await snapshotAppmaps(env.appmapsDir)).keys()].sort().map((relative) => ({ file: path.join(env.appmapsDir, relative), relative }))
+    : env.config.entries.map((entry) => ({ file: baselineAppMapPath(env, entry), entry }));
+  let searched = 0;
+  let matched = 0;
+  for (const candidate of candidates) {
+    if ((await readFileOrNull(candidate.file)) === null) continue;
+    searched += 1;
+    const appmap = await readJson(candidate.file);
+    const assessment = assessAppMap(appmap, (await fs.stat(candidate.file)).size, env.packagePaths);
+    const hits = assessment.all_code_objects.filter((codeObject) => codeObject.includes(needle));
+    if (hits.length === 0) continue;
+    matched += 1;
+    if (candidate.entry) {
+      console.log(`  ${candidate.entry.test_name}  (${candidate.entry.test_file})`);
+    } else {
+      const metadata = appmap.metadata ?? {};
+      const where = [metadata.name, metadata.source_location].filter(Boolean).join('  ');
+      console.log(`  ${candidate.relative}${where ? `  (${where})` : ''}`);
+    }
+    console.log(`       ${hits.slice(0, 10).join(', ')}${hits.length > 10 ? ` (+${hits.length - 10} more)` : ''}`);
+  }
+  if (searched === 0) {
+    const where = options.fresh ? env.appmapsDir : path.join(env.baselineRoot, 'appmaps');
+    console.log(`No ${what}s to search under ${where}.`);
+  } else if (matched === 0) {
+    console.log(
+      `No ${what} runs a code object matching '${needle}' (${searched} searched). ` +
+        `Either nothing runs it, or the recordings spell it differently: try a shorter name, such as the class alone.`,
+    );
+  } else {
+    console.log(`${matched} of ${searched} ${what}(s) run a code object matching '${needle}'.`);
+  }
 }
 
 // Map of appmap-file relative path -> change signature, recursively under dir.
@@ -700,12 +824,16 @@ const DEFAULT_HYGIENE = {
   warn_repeat_ratio: 0.25,
 };
 
-function assessAppMap(appmap, entry = {}, byteSize = 0, projectPackages = []) {
+function assessAppMap(appmap, byteSize = 0, projectPackages = []) {
   const events = Array.isArray(appmap.events) ? appmap.events : [];
   const calls = events.filter((event) => event.event === 'call');
   const codeObjects = new Set();
   const projectCodeObjects = new Set();
+  const classes = new Set();
+  const projectClasses = new Set();
   const labels = new Set();
+  const sqlTables = new Set();
+  const httpRoutes = new Set();
   const frequencies = new Map();
   let sqlQueries = 0;
   let httpRequests = 0;
@@ -714,14 +842,26 @@ function assessAppMap(appmap, entry = {}, byteSize = 0, projectPackages = []) {
     if (event.sql_query) {
       sqlQueries += 1;
       frequencies.set('SQL', (frequencies.get('SQL') ?? 0) + 1);
+      for (const table of tablesIn(event.sql_query.sql)) sqlTables.add(table);
       continue;
     }
-    if (event.http_server_request || event.http_client_request) httpRequests += 1;
+    if (event.http_server_request) {
+      httpRequests += 1;
+      const request = event.http_server_request;
+      const route = `${request.request_method ?? ''} ${request.normalized_path_info ?? request.path_info ?? ''}`.trim();
+      if (route) httpRoutes.add(route);
+    } else if (event.http_client_request) {
+      httpRequests += 1;
+    }
     if (!event.defined_class || !event.method_id) continue;
     const separator = event.static ? '.' : '#';
     const codeObject = `${event.defined_class}${separator}${event.method_id}`;
     codeObjects.add(codeObject);
-    if (isProjectCode(event.path, projectPackages)) projectCodeObjects.add(codeObject);
+    classes.add(event.defined_class);
+    if (isProjectCode(event.path, projectPackages)) {
+      projectCodeObjects.add(codeObject);
+      projectClasses.add(event.defined_class);
+    }
     frequencies.set(codeObject, (frequencies.get(codeObject) ?? 0) + 1);
   }
 
@@ -732,14 +872,16 @@ function assessAppMap(appmap, entry = {}, byteSize = 0, projectPackages = []) {
   else if (events.length < DEFAULT_HYGIENE.min_events) warnings.push(`contains only ${events.length} events`);
   if (calls.length === 0) errors.push('contains no function, HTTP, or SQL calls');
 
-  const required = Array.isArray(entry.expect) ? entry.expect.map(String) : [];
-  if (entry.require_expect && required.length === 0) errors.push('has no expect coverage declaration');
-  const missing = required.filter((codeObject) => !codeObjects.has(codeObject));
-  if (missing.length > 0) errors.push(`missing required code objects: ${missing.join(', ')}`);
   collectLabels(appmap.classMap, labels);
-  const requiredLabels = Array.isArray(entry.expect_labels) ? entry.expect_labels.map(String) : [];
-  const missingLabels = requiredLabels.filter((label) => !labels.has(label));
-  if (missingLabels.length > 0) errors.push(`missing required labels: ${missingLabels.join(', ')}`);
+
+  // A gold trace shows a subsystem working end to end, which shows up as calls
+  // crossing classes and reaching SQL or HTTP. A recording that stays inside one
+  // class and touches neither is the shape of a unit test.
+  const ownClasses = projectPackages.length > 0 ? projectClasses : classes;
+  if (calls.length > 0 && ownClasses.size <= 1 && sqlQueries === 0 && httpRequests === 0) {
+    const scope = ownClasses.size === 0 ? 'no project class' : `only one project class (${[...ownClasses][0]})`;
+    warnings.push(`runs ${scope} and makes no SQL or HTTP calls: reads like a unit test`);
+  }
 
   if (byteSize > DEFAULT_HYGIENE.warn_bytes) warnings.push(`is large (${formatBytes(byteSize)})`);
   if (events.length > DEFAULT_HYGIENE.warn_events) warnings.push(`has ${events.length} events`);
@@ -756,12 +898,103 @@ function assessAppMap(appmap, entry = {}, byteSize = 0, projectPackages = []) {
     sql_queries: sqlQueries,
     http_requests: httpRequests,
     code_objects: codeObjects.size,
+    all_code_objects: [...codeObjects].sort(),
     project_code_objects: [...projectCodeObjects].sort(),
+    project_classes: [...ownClasses].sort(),
     labels: [...labels].sort(),
+    sql_tables: [...sqlTables].sort(),
+    http_routes: [...httpRoutes].sort(),
     top_repeated: repeated.slice(0, 5),
     errors,
     warnings,
   };
+}
+
+// Table names a SQL statement reads or writes: a rough scan of the words after
+// FROM / JOIN / INTO / UPDATE. Enough to say "this trace touches `coupons` and no
+// other does"; not a SQL parser.
+function tablesIn(sql) {
+  const tables = new Set();
+  for (const match of String(sql ?? '').matchAll(/\b(?:from|join|into|update)\s+["'`]?([A-Za-z_][\w.]*)/gi)) {
+    tables.add(match[1].toLowerCase());
+  }
+  return tables;
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: what an entry guards that no other entry guards
+// ---------------------------------------------------------------------------
+//
+// One measured fact keeps the gold set from filling up with near-duplicates: the
+// coverage delta. From the recordings, what a trace runs that no other trace
+// runs: project code objects, labels, SQL tables, HTTP routes. `discover` reports
+// it for a candidate against the committed set; `check` reports it for every
+// entry against the entries before it and warns when it is empty. The engine
+// prints the facts; whether the additions are worth an entry is the reader's call.
+
+// A recording's project code objects, or every code object when the package
+// filter matched none of them (a `packages` entry the matcher cannot read): a
+// comparison over nothing would call every entry a duplicate of the first.
+function coverageOf(assessment, projectPackages = []) {
+  const useProject = projectPackages.length > 0 && assessment.project_code_objects.length > 0;
+  return {
+    code_objects: new Set(useProject ? assessment.project_code_objects : assessment.all_code_objects),
+    labels: new Set(assessment.labels),
+    tables: new Set(assessment.sql_tables),
+    routes: new Set(assessment.http_routes),
+  };
+}
+
+const COVERAGE_KINDS = [['code_objects', 'code objects'], ['labels', 'labels'], ['tables', 'SQL tables'], ['routes', 'HTTP routes']];
+
+// What `candidate` covers that none of `others` ([{ name, coverage }]) covers, plus
+// the other entry whose code objects overlap the candidate's the most.
+function coverageDelta(candidate, others) {
+  const added = {};
+  for (const [kind] of COVERAGE_KINDS) {
+    const union = new Set(others.flatMap((other) => [...other.coverage[kind]]));
+    added[kind] = [...candidate[kind]].filter((item) => !union.has(item)).sort();
+  }
+  let mostSimilar = null;
+  for (const other of others) {
+    const shared = [...candidate.code_objects].filter((item) => other.coverage.code_objects.has(item)).length;
+    const overlap = candidate.code_objects.size > 0 ? shared / candidate.code_objects.size : 0;
+    if (!mostSimilar || overlap > mostSimilar.overlap) mostSimilar = { name: other.name, overlap };
+  }
+  const isNew = Object.values(added).some((list) => list.length > 0);
+  return { added, mostSimilar, isNew };
+}
+
+function describeAdded(added) {
+  return COVERAGE_KINDS
+    .filter(([kind]) => added[kind].length > 0)
+    .map(([kind, label]) => `${label} ${added[kind].slice(0, 8).join(', ')}${added[kind].length > 8 ? ` (+${added[kind].length - 8} more)` : ''}`)
+    .join('; ');
+}
+
+function printCoverageDelta(delta, existingCount) {
+  if (existingCount === 0) {
+    console.log(`       coverage: first entry; nothing to compare against yet`);
+    return;
+  }
+  const similar = delta.mostSimilar ? ` (closest: ${delta.mostSimilar.name}, ${Math.round(delta.mostSimilar.overlap * 100)}% of this trace's code objects appear there)` : '';
+  if (delta.isNew) {
+    console.log(`       adds coverage no existing entry has: ${describeAdded(delta.added)}${similar}`);
+  } else {
+    console.log(`       adds no coverage beyond the existing entries${similar}`);
+  }
+}
+
+// For `check`: each entry against the entries before it, in manifest order, so
+// a newly added duplicate is the one that gets the warning. A warning per entry
+// whose recording covers nothing the earlier ones do not.
+function printCoverageOverlaps(assessed) {
+  for (const [index, entry] of assessed.entries()) {
+    if (index === 0) continue;
+    const delta = coverageDelta(entry.coverage, assessed.slice(0, index));
+    if (delta.isNew) continue;
+    console.log(`  WARN ${entry.name}: runs no code object, label, SQL table, or HTTP route that the earlier entries do not (closest: ${delta.mostSimilar.name}, ${Math.round(delta.mostSimilar.overlap * 100)}% overlap). Keep it only if it drives a branch inside those functions that ${delta.mostSimilar.name} does not (a refusal, a fallback, a guard); otherwise merge it into that entry.`);
+  }
 }
 
 function printAssessment(entry, assessment, { details }) {
@@ -784,6 +1017,12 @@ function printAssessment(entry, assessment, { details }) {
   }
 }
 
+// Is this event's source file inside one of appmap.yml's `packages`? A package
+// `path` is a directory for Ruby and Node (`app/models`, `src`), but a dotted
+// package name for Java and Python (`org.finos.waltz`, `myapp.core`). A dotted
+// name is matched as a directory run anywhere in the file path, since the file
+// lives under a source root the config does not mention
+// (`waltz-data/src/main/java/org/finos/waltz/data/FlowDao.java`).
 function isProjectCode(eventPath, projectPackages) {
   if (!eventPath || eventPath.startsWith('<')) return false;
   const absoluteEvent = path.isAbsolute(eventPath);
@@ -791,6 +1030,10 @@ function isProjectCode(eventPath, projectPackages) {
   return projectPackages.some((packagePath) => {
     const packagePrefix = packagePath.replaceAll(path.sep, '/').replace(/^\.\//, '').replace(/\/$/, '');
     if (packagePrefix === '.') return !absoluteEvent && !normalized.startsWith('node_modules/');
+    if (!packagePrefix.includes('/') && packagePrefix.includes('.') && !path.isAbsolute(packagePath)) {
+      const run = packagePrefix.replaceAll('.', '/');
+      return normalized.startsWith(`${run}/`) || normalized.includes(`/${run}/`);
+    }
     if (absoluteEvent !== path.isAbsolute(packagePath)) return false;
     return normalized === packagePrefix || normalized.startsWith(`${packagePrefix}/`);
   });
@@ -897,112 +1140,21 @@ function runShell(command, options) {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal YAML reader
+// YAML reader
 // ---------------------------------------------------------------------------
 //
-// Dependency-free so the skill is zero-install. Handles the constrained schema
-// used by manifest.yaml: block maps, block sequences
-// of maps, one level of nested maps, and scalar values (strings, numbers,
-// booleans, null). Not a general YAML parser — no flow collections, anchors,
-// multi-line scalars, or inline comments. Put no `#` comments on the same line
-// as a value; quote a value if it would otherwise be ambiguous.
+// js-yaml, vendored under assets/vendor so the skill stays zero-install (see
+// vendor/README.md for the version and how to upgrade). Standard YAML: comments
+// anywhere, flow collections, anchors, multi-line scalars all work.
 
-function parseYaml(text) {
-  const lines = [];
-  for (const raw of text.split('\n')) {
-    const withoutTrailing = raw.replace(/\s+$/, '');
-    if (!withoutTrailing.trim()) {
-      continue;
-    }
-    const stripped = withoutTrailing.replace(/^\s*/, '');
-    if (stripped.startsWith('#')) {
-      continue;
-    }
-    const indent = withoutTrailing.length - stripped.length;
-    lines.push({ indent, content: stripped });
+function parseYaml(text, filename = 'manifest.yaml') {
+  try {
+    return loadYaml(text, { filename }) ?? null;
+  } catch (error) {
+    throw new Error(`Invalid YAML in ${filename}: ${error.message}`);
   }
-  const [value] = parseBlock(lines, 0, 0);
-  return value;
 }
-
-function parseBlock(lines, index, minIndent) {
-  if (index >= lines.length || lines[index].indent < minIndent) {
-    return [null, index];
-  }
-  const indent = lines[index].indent;
-  if (lines[index].content.startsWith('- ') || lines[index].content === '-') {
-    return parseList(lines, index, indent);
-  }
-  return parseMap(lines, index, indent);
-}
-
-function parseList(lines, index, indent) {
-  const arr = [];
-  while (index < lines.length && lines[index].indent === indent && (lines[index].content.startsWith('- ') || lines[index].content === '-')) {
-    const inline = lines[index].content === '-' ? '' : lines[index].content.slice(2);
-    const itemLines = [];
-    if (inline) {
-      itemLines.push({ indent: indent + 2, content: inline });
-    }
-    index += 1;
-    while (index < lines.length && lines[index].indent > indent) {
-      itemLines.push(lines[index]);
-      index += 1;
-    }
-    if (itemLines.length === 0) {
-      arr.push(null);
-    } else if (itemLines.length === 1 && (isQuotedScalar(itemLines[0].content) ||
-      !/^[^:\s][^:]*:(\s|$)/.test(itemLines[0].content))) {
-      arr.push(parseScalar(itemLines[0].content));
-    } else {
-      const [value] = parseBlock(itemLines, 0, itemLines[0].indent);
-      arr.push(value);
-    }
-  }
-  return [arr, index];
-}
-
-function parseMap(lines, index, indent) {
-  const obj = {};
-  while (index < lines.length && lines[index].indent === indent) {
-    const match = lines[index].content.match(/^([^:]+):(?:\s+(.*))?$/);
-    if (!match) {
-      break;
-    }
-    const key = match[1].trim();
-    const inlineValue = match[2];
-    if (inlineValue === undefined || inlineValue === '') {
-      index += 1;
-      const [value, next] = parseBlock(lines, index, indent + 1);
-      obj[key] = value;
-      index = next;
-    } else {
-      obj[key] = parseScalar(inlineValue);
-      index += 1;
-    }
-  }
-  return [obj, index];
-}
-
-function parseScalar(raw) {
-  const value = raw.trim();
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1);
-  }
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  if (value === 'null' || value === '~') return null;
-  if (/^-?\d+$/.test(value)) return Number(value);
-  if (/^-?\d*\.\d+$/.test(value)) return Number(value);
-  return value;
-}
-
-function isQuotedScalar(value) {
-  return (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"));
-}
-
-export { parseYaml, diagramDigest, changedAppmaps, assessAppMap };
+export { parseYaml, diagramDigest, changedAppmaps, assessAppMap, coverageOf, coverageDelta };
 
 // Resolve symlinks on argv[1]: import.meta.url is always realpath-resolved, but
 // the invoked path may be a symlink (this skill is commonly symlinked into a

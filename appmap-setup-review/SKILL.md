@@ -69,11 +69,13 @@ the replay phase cherry-picks them.
 Follow the **appmap-gold-traces** bootstrap: `gold_traces/manifest.yaml` +
 `baseline/appmaps/`, with `.gitattributes` marking baselines binary. Curate one
 lean, deterministic integration test per subsystem relevant to the BASE..HEAD
-feature (DAO and service paths with SQL beat granular unit tests). Use the
-engine's `discover` for every `appmap_path`, and give each entry an `expect`
-list of the code objects it must execute. Run `check --record`; it records
-twice, fails on empty traces, missing `expect` coverage, or run-to-run drift,
-and warns on large or repetitive traces. Then seed with `update`. The
+feature (DAO and service paths with SQL beat granular unit tests). Find each
+test the way the gold-traces skill's "Finding the test for a code path"
+says, and use the engine's `discover` for every `appmap_path`; add an entry
+only when `discover` shows it runs something no committed trace runs. Run
+`check --record`; it records twice, fails on empty traces or run-to-run
+drift, and warns on large, repetitive, or unit-test-shaped traces. Then seed
+with `update`. The
 manifest's `commands` block is already filled by the setup's "commands" commit;
 `plan` shows the resulting record commands before anything runs. Commit.
 

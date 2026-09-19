@@ -30,6 +30,9 @@
 //      restore refuses a directory that already exists, so none is created first.
 //   4. `appmap compare` from out/, which needs appmap.yml in its working dir. No
 //      --clobber-output-dir: it would delete the restored base/ and head/.
+//   5. For each changed trace, measure its diff sequence diagram (nodes by diff
+//      mode, moved blocks with where they came from, labels on the changed nodes)
+//      and render the same diff as text with `appmap sequence-diagram-diff`.
 //
 // The workspace lives outside the repo, so its files are never committed by accident.
 
@@ -46,6 +49,10 @@ import { pathToFileURL } from 'node:url';
 import { loadManifest, locateAppmap, defaultAppmapCli } from '../../appmap-gold-traces/assets/manage.mjs';
 
 const WORKSPACE_MARKER = '.appmap-review-workspace';
+
+// The first @appland/appmap whose sequence diagram diff reports a block that
+// moved to another caller as one move, instead of a removal plus an addition.
+const MIN_CLI_VERSION = '3.204.0';
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
@@ -81,6 +88,7 @@ async function main() {
   const appmapsDir = path.join(appmapYmlDir, appmapDir);
   const baselineDir = path.join(goldDir, 'baseline', 'appmaps');
   const cli = cliInvocation(adhoc ? options.appmapCli ?? defaultAppmapCli() : config.appmap_cli);
+  const cliVersion = checkCliVersion(cli);
 
   let base;
   let head;
@@ -139,7 +147,11 @@ async function main() {
   console.error('Comparing...');
   runCli(cli, ['compare', '--base-revision', 'base', '--head-revision', 'head', '--output-dir', 'report'], out);
 
-  await printSummary({ base, head, counts, reportDir: path.join(out, 'report') });
+  // 5 — measure and render each changed trace's diff
+  const reportDir = path.join(out, 'report');
+  const views = await describeChangedTraces(cli, out, reportDir);
+
+  await printSummary({ base, head, counts, reportDir, views, cliVersion });
 }
 
 function parseArgs(args) {
@@ -222,7 +234,12 @@ copy both into the report so a reader can rerun the compare.
 
 Output, under the workspace:
   out/report/change-report.json   new, removed, and changed traces; SQL, API, and findings diffs
-  out/report/diff/                one diff sequence diagram per changed trace
+  out/report/diff/                one diff sequence diagram (JSON) per changed trace; a block
+                                  that moved to another caller is one node marked moved
+  out/report/text/                the same diff as text, one line per changed node
+
+Needs @appland/appmap ${MIN_CLI_VERSION} or later; an older CLI shows a moved block as a
+removal plus an addition, and the summary says so.
 `);
 }
 
@@ -434,13 +451,134 @@ function runCli(cli, args, cwd) {
     const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
     throw new Error(`Command failed in ${cwd}: ${command}\n${detail}`);
   }
+  return result.stdout;
+}
+
+// The CLI's version, or null when it cannot be read. An older CLI still runs,
+// but its diff shows a moved block as removed plus added, so the reviewer is told.
+function checkCliVersion(cli) {
+  let version = null;
+  try {
+    version = (runCli(cli, ['--version'], process.cwd()).match(/\d+\.\d+\.\d+/) ?? [null])[0];
+  } catch {
+    return null;
+  }
+  if (version && compareVersions(version, MIN_CLI_VERSION) < 0) {
+    console.error(`note: AppMap CLI ${version} shows a block that moved to another caller as a removal plus an addition; ${MIN_CLI_VERSION} or later reports it as a move. Update @appland/appmap.`);
+  }
+  return version;
+}
+
+export function compareVersions(a, b) {
+  const parts = (version) => version.split('.').map(Number);
+  const [x, y] = [parts(a), parts(b)];
+  for (let index = 0; index < Math.max(x.length, y.length); index += 1) {
+    const difference = (x[index] ?? 0) - (y[index] ?? 0);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Each changed trace's diff: measured, and rendered as text
+// ---------------------------------------------------------------------------
+
+// Returns { <trace>: { summary, text } }: the measurements of the diff sequence
+// diagram `appmap compare` wrote, and the path of the same diff rendered as text.
+async function describeChangedTraces(cli, out, reportDir) {
+  const report = JSON.parse(await fs.readFile(path.join(reportDir, 'change-report.json'), 'utf8'));
+  const changed = Array.isArray(report.changedAppMaps) ? report.changedAppMaps : [];
+  const views = {};
+  for (const item of changed) {
+    let summary = null;
+    if (item.sequenceDiagramDiff) {
+      try {
+        summary = summarizeDiff(JSON.parse(await fs.readFile(path.join(reportDir, 'diff', item.sequenceDiagramDiff), 'utf8')));
+      } catch (error) {
+        console.error(`note: could not read the diff diagram for ${item.appmap} (${firstLine(error.message)})`);
+      }
+    }
+    views[item.appmap] = { summary, text: await renderDiffText(cli, out, reportDir, item.appmap) };
+  }
+  return views;
+}
+
+// Over a diff sequence diagram: nodes in all and by diff mode; each moved block
+// with the caller it came from and the one it is under now (or "reordered" when
+// both are the same node); the labels on the changed nodes. Names are qualified
+// by actor the way the CLI's text rendering does it: `Orders#create`, `Users.find`.
+export function summarizeDiff(diagram) {
+  const actors = new Map((diagram.actors ?? []).map((actor) => [actor.id, actor.name]));
+  const name = (node) => {
+    if (!node) return 'the top level';
+    switch (node.nodeType) {
+      case 1: return 'loop';
+      case 3: {
+        const actor = actors.get(node.callee);
+        return actor ? `${actor}${node.static ? '.' : '#'}${node.name}` : node.name;
+      }
+      default: return node.route ?? node.query ?? node.name ?? '?';
+    }
+  };
+  const summary = { total: 0, diff: 0, added: 0, removed: 0, changed: 0, moved: [], labels: new Set() };
+  const walk = (node, parent) => {
+    summary.total += 1;
+    if (node.diffMode) {
+      summary.diff += 1;
+      for (const label of node.labels ?? []) summary.labels.add(label);
+    }
+    if (node.diffMode === 1) summary.added += 1;
+    else if (node.diffMode === 2) summary.removed += 1;
+    else if (node.diffMode === 3) summary.changed += 1;
+    else if (node.diffMode === 4) {
+      const from = node.movedFrom;
+      const to = parent ? { name: name(parent), actorId: parent.callee } : undefined;
+      const reordered = from?.name === to?.name && from?.actorId === to?.actorId;
+      summary.moved.push({ name: name(node), from: from?.name ?? 'the top level', to: name(parent), reordered });
+    }
+    for (const child of node.children ?? []) walk(child, node);
+  };
+  for (const root of diagram.rootActions ?? []) walk(root, undefined);
+  return summary;
+}
+
+// The diff rendered as text by the CLI, from the two sides' archived sequence
+// diagrams, at <reportDir>/text/<trace>.diff.txt. The CLI names its output
+// diff.txt inside --output-dir, so each trace gets its own directory, then the
+// file is moved up beside it.
+async function renderDiffText(cli, out, reportDir, trace) {
+  const sides = ['base', 'head'].map((side) => path.join(reportDir, side, trace, 'sequence.json'));
+  try {
+    await Promise.all(sides.map((file) => fs.access(file)));
+  } catch {
+    console.error(`note: no text rendering for ${trace}; a side has no archived sequence diagram for it.`);
+    return null;
+  }
+  const dir = path.join(reportDir, 'text', trace);
+  await fs.mkdir(dir, { recursive: true });
+  try {
+    const relative = (file) => path.relative(out, file);
+    runCli(cli, ['sequence-diagram-diff', ...sides.map(relative), '--format', 'text', '--output-dir', relative(dir)], out);
+  } catch (error) {
+    console.error(`note: no text rendering for ${trace} (${firstLine(error.message)})`);
+    return null;
+  }
+  const file = `${dir}.diff.txt`;
+  const text = await fs.readFile(path.join(dir, 'diff.txt'), 'utf8');
+  await fs.writeFile(file, text.endsWith('\n') ? text : `${text}\n`);
+  await fs.rm(dir, { recursive: true, force: true });
+  return file;
+}
+
+function firstLine(text) {
+  return String(text).split('\n')[0];
 }
 
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 
-async function printSummary({ base, head, counts, reportDir }) {
+async function printSummary({ base, head, counts, reportDir, views, cliVersion }) {
   const reportFile = path.join(reportDir, 'change-report.json');
   const report = JSON.parse(await fs.readFile(reportFile, 'utf8'));
   const list = (value) => (Array.isArray(value) ? value : []);
@@ -453,12 +591,28 @@ async function printSummary({ base, head, counts, reportDir }) {
   console.log(`Head: ${head.label}${traces(head, counts.head)}`);
   console.log('');
   console.log(`Traces: ${changed.length} changed, ${added.length} new, ${removed.length} removed.`);
+  const indent = ' '.repeat(11);
+  const short = (text) => (text.length > 80 ? `${text.slice(0, 77)}...` : text);
   for (const item of changed) {
-    const diff = item.sequenceDiagramDiff ? `  (diff/${item.sequenceDiagramDiff})` : '';
-    console.log(`  changed  ${item.appmap}${diff}`);
+    console.log(`  changed  ${item.appmap}`);
+    const view = views[item.appmap] ?? {};
+    const s = view.summary;
+    if (item.sequenceDiagramDiff) {
+      const nodes = s ? `${s.diff} of ${s.total} nodes: ${s.added} added, ${s.removed} removed, ${s.changed} changed, ${s.moved.length} moved` : 'not measured';
+      console.log(`${indent}${nodes}  (diff/${item.sequenceDiagramDiff})`);
+    }
+    for (const move of s?.moved ?? []) {
+      const where = move.reordered ? `reordered within ${short(move.to)}` : `from ${short(move.from)} to ${short(move.to)}`;
+      console.log(`${indent}moved:   ${short(move.name)} ${where}`);
+    }
+    if (s?.labels.size > 0) console.log(`${indent}labels:  ${[...s.labels].join(', ')}`);
+    if (view.text) console.log(`${indent}text:    ${path.relative(reportDir, view.text).split(path.sep).join('/')}`);
   }
   for (const name of added) console.log(`  new      ${name}`);
   for (const name of removed) console.log(`  removed  ${name}`);
+  if (changed.length > 0 && cliVersion && compareVersions(cliVersion, MIN_CLI_VERSION) < 0) {
+    console.log(`Moved blocks: shown as removed plus added (AppMap CLI ${cliVersion}; ${MIN_CLI_VERSION} or later reports a move).`);
+  }
 
   const sql = report.sqlDiff;
   if (sql) {
@@ -486,6 +640,7 @@ async function printSummary({ base, head, counts, reportDir }) {
   console.log(`Run in:        ${process.cwd()}`);
   console.log(`Change report: ${reportFile}`);
   console.log(`Diff diagrams: ${path.join(reportDir, 'diff')}`);
+  if (Object.values(views).some((view) => view.text)) console.log(`Diff text:     ${path.join(reportDir, 'text')}`);
   if (base.sha) {
     console.log(`Source diff:   git diff ${head.sha ? `${base.short}..${head.short}` : base.short}`);
   } else {

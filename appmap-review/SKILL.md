@@ -123,6 +123,11 @@ finding needs a label, the exact position of a change, or the children of a move
 block. The text stops after four nested levels of change, so a diff of a deeply
 nested change is only complete in the JSON.
 
+A move is reported only when the block is identical on both sides. A block that
+moved **and** changed inside (a query added under it, say) shows as a removal and
+an addition with the same name, in two places. Read that pair as one event: the
+block moved, and this is what changed in it.
+
 The workspace is `<system temp>/appmap-review`. It sits outside the repo, so its
 files never get committed by accident, and it is cleared at the start of every
 run. Pass `--workspace DIR` to keep two reviews side by side. When a CLI step

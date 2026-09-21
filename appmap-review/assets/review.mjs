@@ -50,7 +50,7 @@ import { loadManifest, locateAppmap, defaultAppmapCli } from '../../appmap-gold-
 
 const WORKSPACE_MARKER = '.appmap-review-workspace';
 
-// The first @appland/appmap whose sequence diagram diff reports a block that
+// The first AppMap CLI whose sequence diagram diff reports a block that
 // moved to another caller as one move, instead of a removal plus an addition.
 const MIN_CLI_VERSION = '3.204.0';
 
@@ -238,7 +238,7 @@ Output, under the workspace:
                                   that moved to another caller is one node marked moved
   out/report/text/                the same diff as text, one line per changed node
 
-Needs @appland/appmap ${MIN_CLI_VERSION} or later; an older CLI shows a moved block as a
+Needs AppMap CLI ${MIN_CLI_VERSION} or later; an older CLI shows a moved block as a
 removal plus an addition, and the summary says so.
 `);
 }
@@ -437,15 +437,12 @@ function cliInvocation(appmapCli) {
   return { bin, prefix };
 }
 
-// Quiet on success; the CLI prints progress for every AppMap. On Windows an
-// npm-installed `appmap` is a .cmd script, which Node starts only through a shell.
+// Quiet on success; the CLI prints progress for every AppMap.
 function runCli(cli, args, cwd) {
-  const shell = process.platform === 'win32' && !/\.exe$/i.test(cli.bin);
-  const bin = shell && /\s/.test(cli.bin) ? `"${cli.bin}"` : cli.bin;
-  const result = spawnSync(bin, [...cli.prefix, ...args], { cwd, encoding: 'utf8', shell, maxBuffer: 256 * 1024 * 1024 });
+  const result = spawnSync(cli.bin, [...cli.prefix, ...args], { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
   const command = [cli.bin, ...cli.prefix, ...args].join(' ');
   if (result.error) {
-    throw new Error(`Could not start the AppMap CLI: ${command} (${result.error.message}). Install @appland/appmap, or set commands.appmap_cli in the manifest.`);
+    throw new Error(`Could not start the AppMap CLI: ${command} (${result.error.message}).`);
   }
   if (result.status !== 0) {
     const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
@@ -464,7 +461,7 @@ function checkCliVersion(cli) {
     return null;
   }
   if (version && compareVersions(version, MIN_CLI_VERSION) < 0) {
-    console.error(`note: AppMap CLI ${version} shows a block that moved to another caller as a removal plus an addition; ${MIN_CLI_VERSION} or later reports it as a move. Update @appland/appmap.`);
+    console.error(`note: AppMap CLI ${version} shows a block that moved to another caller as a removal plus an addition; ${MIN_CLI_VERSION} or later reports it as a move.`);
   }
   return version;
 }

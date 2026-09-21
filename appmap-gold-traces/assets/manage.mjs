@@ -778,11 +778,8 @@ function sanitizeAppMap(env, appmapFile) {
   try {
     runCommandQuiet(bin, [...prefix, 'sanitize', ...allowArgs, appmapFile], { cwd: env.workingDir });
   } catch (err) {
-    // `sanitize` shipped in @appland/appmap 3.201.0; an older CLI fails here.
-    throw new Error(
-      `${err.message}\n\nThe 'sanitize' command requires @appland/appmap >= 3.201.0. ` +
-        `Update the CLI, or point 'commands.appmap_cli' at a released version >= 3.201.0.`
-    );
+    // `sanitize` shipped in AppMap CLI 3.201.0; an older CLI fails here.
+    throw new Error(`${err.message}\n\nThe 'sanitize' command requires AppMap CLI 3.201.0 or later.`);
   }
 }
 

@@ -71,7 +71,7 @@ node "${CLAUDE_SKILL_DIR}/assets/review.mjs" compare --base <baseline-rev> [--he
 ```
 
 `--head` defaults to `HEAD`. The helper needs git, Node, and the AppMap CLI
-(`@appland/appmap` ≥ 3.204.0, the first whose diff reports a block that moved to
+(version 3.204.0 or later, the first whose diff reports a block that moved to
 another caller as one move; an older CLI still runs, shows the move as a removal
 plus an addition, and the summary says so), and no shell tools, so it runs the
 same on macOS, Linux, and Windows. It finds the CLI the way the gold-traces engine does:

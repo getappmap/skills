@@ -180,7 +180,7 @@ test('compare: two revisions from git, head defaulting to HEAD', (t) => {
   assert.ok(!fs.existsSync(path.join(workspace, 'out', 'report', 'text', 'pytest', 'alpha')));
   assert.match(result.stdout, /Diff text:     \S+[\\/]text\n/);
   assert.doesNotMatch(result.stdout, /Moved blocks:/);
-  assert.doesNotMatch(result.stderr, /Update @appland\/appmap/);
+  assert.doesNotMatch(result.stderr, /note: AppMap CLI/);
   // Two traces share a basename; both keep their own directory.
   assert.match(result.stdout, /new      y\/same/);
   assert.match(result.stdout, /SQL: 1 new queries, 0 removed; tables \+coupons\./);
@@ -197,7 +197,7 @@ test('compare: an older CLI is told about, since it shows a move as removed plus
   const { server, workspace } = makeRepo(t);
   const result = runReview(server, { FAKE_APPMAP_VERSION: '3.203.1' }, 'compare', '--base', 'base', '--workspace', workspace);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /note: AppMap CLI 3\.203\.1 shows a block that moved .* 3\.204\.0 or later reports it as a move\. Update @appland\/appmap\./);
+  assert.match(result.stderr, /note: AppMap CLI 3\.203\.1 shows a block that moved .* 3\.204\.0 or later reports it as a move\./);
   assert.match(result.stdout, /Moved blocks: shown as removed plus added \(AppMap CLI 3\.203\.1; 3\.204\.0 or later reports a move\)\./);
 });
 

@@ -1,6 +1,6 @@
 ---
 name: appmap-review
-description: Review the runtime-behavior change between two revisions using the committed gold traces. Archives and compares each side with the AppMap CLI, then interprets the result into a findings-first report covering unintended side effects, missing security checks, SQL and HTTP risks, and coverage gaps. Use when asked to review a branch, PR, or release for behavioral change, or to decide which changed gold traces to bless. Needs gold traces maintained by appmap-gold-traces.
+description: Review the runtime-behavior change between two revisions using the committed gold traces, or between two AppMap recordings made by hand (for example one Postman run recorded on each of two branches). Archives and compares each side with the AppMap CLI, then interprets the result into a findings-first report covering unintended side effects, missing security checks, SQL and HTTP risks, and coverage gaps. Use when asked to review a branch, PR, or release for behavioral change, to compare two AppMap recordings, or to decide which changed gold traces to bless. The gold-traces path needs baselines maintained by appmap-gold-traces; the ad-hoc path needs only the two recordings.
 ---
 
 # Skill: AppMap Behavioral Review
@@ -71,8 +71,10 @@ node "${CLAUDE_SKILL_DIR}/assets/review.mjs" compare --base <baseline-rev> [--he
 ```
 
 `--head` defaults to `HEAD`. The helper needs git, Node, and the AppMap CLI
-(`@appland/appmap` ≥ 3.200.0), and no shell tools, so it runs the same on macOS,
-Linux, and Windows. It finds the CLI the way the gold-traces engine does:
+(`@appland/appmap` ≥ 3.204.0, the first whose diff reports a block that moved to
+another caller as one move; an older CLI still runs, shows the move as a removal
+plus an addition, and the summary says so), and no shell tools, so it runs the
+same on macOS, Linux, and Windows. It finds the CLI the way the gold-traces engine does:
 `commands.appmap_cli` in the manifest, else `~/.appmap/bin/appmap`, else
 `appmap` on `PATH`. In a monorepo, pass `--dir packages/<name>/gold_traces`.
 
@@ -83,24 +85,48 @@ Base: main = 0070766 feat(routing): cancel a routed fleet's onward legs (48 gold
 Head: HEAD = 7e08cc3 chore(gold-traces): re-bless multi-hop relay (50 gold traces)
 
 Traces: 1 changed, 2 new, 0 removed.
-  changed  pytest/test_multi_hop_routing  (diff/pytest/test_multi_hop_routing.diff.sequence.json)
+  changed  pytest/test_multi_hop_routing
+           9 of 111 nodes: 3 added, 2 removed, 3 changed, 1 moved  (diff/pytest/test_multi_hop_routing.diff.sequence.json)
+           moved:   DepartureEvent.create from RouteLeg#advance to Fleet#depart
+           labels:  security.authorization
+           text:    text/pytest/test_multi_hop_routing.diff.txt
   new      pytest/test_cancel_fleet_route_rejects_fleets_without_onward_legs
   new      pytest/test_routed_fleet_halts_when_the_onward_chain_is_gone
 SQL: 2 new queries, 0 removed.
 API: no breaking change, 0 other difference(s).
 Scanner findings: 0 new, 0 resolved.
 
+Command:       node /home/me/.claude/skills/appmap-review/assets/review.mjs compare --base main
+Run in:        /home/me/src/nova/server
 Change report: <workspace>/out/report/change-report.json
 Diff diagrams: <workspace>/out/report/diff
+Diff text:     <workspace>/out/report/text
 Source diff:   git diff 0070766..7e08cc3
 ```
 
-Read the two outputs it names. They are the evidence for the recipe:
+The `Command` and `Run in` lines echo the compare exactly as it ran. They go into
+the report's closing section, so a reader can rerun it.
+
+Read the outputs it names. They are the evidence for the recipe:
 
 | Output | What it holds |
 | --- | --- |
 | `change-report.json` | the structural facts: `changedAppMaps`, `newAppMaps`, `removedAppMaps`, `sqlDiff`, `apiDiff`, `findingDiff` |
-| `diff/**/*.diff.sequence.json` | one diagram per changed trace; each action carries its `diffMode` (added/removed/changed) and its AppMap **labels** |
+| `diff/**/*.diff.sequence.json` | one diagram per changed trace; each action carries its `diffMode` (1 added, 2 removed, 3 changed, 4 moved) and its AppMap **labels**. A moved action is a block that ran unchanged under a different caller, or in a different place among its siblings; `movedFrom` names the caller it used to be under. The authority for whether a trace changed, and the only view with labels. |
+| `text/<trace>.diff.txt` | the same diff as text, one line per changed action: "added", "removed", "changed X to Y", "moved X from Y", "reordered X within Y". No labels. |
+
+For each changed trace, the summary gives the counts by kind, one `moved:` line
+per moved block with the caller it left and the caller it is under now (or
+"reordered within" when both are the same), and the labels on the changed actions.
+Read the text first; it is the whole diff in a few lines. Open the JSON when a
+finding needs a label, the exact position of a change, or the children of a moved
+block. The text stops after four nested levels of change, so a diff of a deeply
+nested change is only complete in the JSON.
+
+A move is reported only when the block is identical on both sides. A block that
+moved **and** changed inside (a query added under it, say) shows as a removal and
+an addition with the same name, in two places. Read that pair as one event: the
+block moved, and this is what changed in it.
 
 The workspace is `<system temp>/appmap-review`. It sits outside the repo, so its
 files never get committed by accident, and it is cleared at the start of every
@@ -137,14 +163,51 @@ the head revision, and state once in the banner that the head recordings are
 uncommitted. The source diff for the recipe is `git diff <baseline>` with no head
 ref, which includes uncommitted changes; the helper prints it.
 
+## Reviewing two ad-hoc recordings
+
+When there are no gold traces, only the same scenario recorded by hand on each
+branch (a Postman run against a server with remote recording on, say), the
+review runs on those two files:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/assets/review.mjs" compare \
+  --base-appmap <recording made on the base branch> \
+  --head-appmap <recording made on the head branch> \
+  --name <scenario> [--base <base-rev> --head <head-rev>]
+```
+
+Run it inside the project so the right `appmap.yml` is found. Both files are
+copied to one trace name, so timestamp-named files compare as one trace. Give the
+scenario a `--name`, and pass the revisions when the branches are known so the
+helper prints the source diff. What differs from the gold-traces path:
+
+| | Gold traces | Ad-hoc recordings |
+| --- | --- | --- |
+| Recordings | git, at each revision | the two files |
+| Manifest and `gold_traces/` | required | not read |
+| Captured values | sanitized tokens | real values |
+| `--base` / `--head` | the revisions compared | optional; only name the source diff |
+
+Three things change in the review. Values are real, so use them when they
+explain a finding but do not paste secrets or personal data into a report. Skip
+the `covers` lookups in Step 2; coverage is only what the run touched, and the
+matrix says so. Say once in the banner that the two sides are hand-made
+recordings of one scenario, so a clean compare clears only that scenario, and
+replace the header's **Revisions** line with a **Recordings** line naming the two
+files. A hand-made recording of a whole request is large, so start from the text
+rendering, which lists only what changed. If a
+changed trace looks like data noise rather than a code change, record one branch
+twice and compare those first.
+
 ## Interpret — the review recipe
 
 The compare output is *facts*; the **review is your interpretation of them** — what
 each change means and what to do. A fixed findings table can't reason about a change
 the way you can. Run all steps in one pass, then render.
 
-Everywhere a step needs runtime evidence, read the **change report** and the
-**per-trace diff sequence diagrams**, together with the **source diff**
+Everywhere a step needs runtime evidence, read the **change report** and each
+changed trace's **diff** (the text rendering to see it whole, the diff sequence
+diagram for labels and exact structure), together with the **source diff**
 (`git diff <baseline>..<head>`). The AppMaps are not background — they are the
 evidence of *what changed*.
 
@@ -233,6 +296,18 @@ to code the diff actually touched (cross-reference the changed functions against
   → Suggestion fields; `type: side-effect`; cite the changed trace, the out-of-scope
   function, and whether it appears in the diff.
 
+  A **moved block** is the ordering change made visible: the same calls, now under a
+  different caller or at a different point in the sequence. For each `moved:` line
+  in the summary, ask three things. Did the diff touch the caller it left, the caller
+  it is under now, or neither? Neither means the move is a side effect. What now runs
+  before and after the block that did not before? A check that used to run before a
+  write and now runs after it carries the same label with a worse outcome; the diff
+  diagram holds the whole head tree, so it shows the new order, and the text
+  rendering does not. Does the block, or either caller, carry a
+  label? A `security.*` or `io.*` label on a move is a finding on its own. A block
+  "reordered within" its caller is the same question at smaller scale: the order of
+  siblings changed, so decide whether that order mattered.
+
 **6 — Absence findings.** The strongest *security* findings are often about what's
 **missing**: a security-labeled function that changed but gained **no** guard, while
 sibling paths did. Traces show what ran; cross-check the source diff for what *should*
@@ -271,6 +346,11 @@ unchanged — this section is how its output is *rendered*. Four principles gove
   sentences beats four dense paragraphs. Keep it inside a fenced block so it survives
   GitHub rendering; keep lines under 90 characters so it does not wrap.
 
+- **Say how the review was invoked.** The header's **Method** line says in a few
+  words which kind of review this was. The full record goes at the very end, after
+  the detail fold: the request as the user gave it and the compare command exactly
+  as it ran, from the helper's `Command` and `Run in` lines. In ad-hoc mode this is
+  the only record of which two files were compared.
 - **Single home.** Every fact is stated exactly once. A finding lives in **Findings**
   and nowhere else — ledger and coverage rows *reference* it by number (`→ #2`). A
   cross-cutting caveat (first-ever baseline, partial trace set) is stated once in the
@@ -301,6 +381,9 @@ the detail stays accessible without being paid for on every read):
 
 **Revisions:** `<head>` vs `<baseline>` · **Date:** <YYYY-MM-DD> ·
 **Commits:** `<sha>` <short subject> · … (group out-of-scope commits in one parenthetical)
+
+**Method:** <one line: "gold traces, `<base>`..`<head>`", or "two ad-hoc recordings of one
+scenario, `<name>`"; the full invocation is at the end of the report>
 
 > ⚠️ **How this review works.** <Two or three sentences for a reader who has never
 > heard of gold traces: recorded test runs were re-run on the head revision and
@@ -411,6 +494,13 @@ which subsystems held still, which traces are new — plus any acceptable Step-5
 side effects (mechanical propagation, confirmed blast radius).
 
 </details>
+
+## How this review was invoked
+
+- **Request:** <the request as the user gave it, quoted>
+- **Compare:** `<the helper's Command line>`
+- **Run in:** `<its Run in directory>`
+- **Evidence:** `<workspace>/out/report` (change report, diff diagrams, and their text renderings)
 ~~~
 
 ## Rules for the interpretation

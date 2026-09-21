@@ -22,6 +22,26 @@ Use this skill when the user or an agent wants to:
 2. **Run** tests or the application with AppMap enabled.
 3. **Find** recorded data in `tmp/appmap/` (default output directory).
 
+## If a tool is missing
+
+Each tool has one source:
+
+| Tool | Source |
+| --- | --- |
+| Ruby, Python, Node agents | RubyGems, PyPI, npm, through the project's package manager |
+| Java agent, Maven and Gradle plugins | see `languages/java.md` |
+| AppMap CLI | see **appmap-setup**, Phase 0 |
+
+If the install fails, stop and tell the user: which tool, the exact command,
+the error text, and what they can do about it. One retry is fine for an error
+that is clearly temporary. Do not try another source, an older version, a copy
+found on disk, or changed registry or proxy settings. **appmap-setup**,
+"If a tool cannot be installed", has the full rule.
+
+This covers getting the tools only. Once they are installed, working out why a
+recording is empty is normal work; each language file has a Troubleshooting
+section for it.
+
 ## Configuration
 
 This skill covers *making* recordings — running tests, serving HTTP

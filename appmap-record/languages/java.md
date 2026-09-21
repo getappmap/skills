@@ -5,8 +5,15 @@ workflow, the output directory rules, and indexing.
 
 ## Language agent
 
-The `appmap.jar` Java agent JAR is available from Maven Central or is auto-downloaded by
-IDE plugins to `$HOME/.appmap/lib/java/appmap.jar`.
+The agent is `$HOME/.appmap/lib/java/appmap.jar`. The AppMap IDE plugins
+install it there, so it may already be present. If it is missing, download it
+from https://github.com/getappmap/appmap-java/releases and install it the way
+**appmap-setup**, Phase 0, describes. That is the only source. Do not install
+an IDE plugin to get it.
+
+The Maven and Gradle plugins below are downloaded by the build tool. If the jar
+or a plugin cannot be downloaded, stop and tell the user; see "If a tool is
+missing" in this skill's `SKILL.md`.
 
 Run with the `-javaagent` JVM flag:
 
@@ -28,7 +35,8 @@ Recorder.getInstance().record("scenario_name", () -> {
 
 ## Record tests with Maven
 
-Add to `pom.xml`:
+Add to `pom.xml`. Releases are listed at
+https://github.com/getappmap/appmap-maven-plugin/releases.
 
 ```xml
 <plugin>
@@ -72,7 +80,9 @@ across all modules, point the plugin at the repo root:
 
 ## Record tests with Gradle
 
-Add to `build.gradle`:
+Add to `build.gradle`. Take the version number from the latest release at
+https://github.com/getappmap/appmap-gradle-plugin/releases (tag `v1.2.0` is
+version `1.2.0`).
 
 ```groovy
 plugins {

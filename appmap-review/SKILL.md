@@ -78,6 +78,10 @@ same on macOS, Linux, and Windows. It finds the CLI the way the gold-traces engi
 `commands.appmap_cli` in the manifest, else `~/.appmap/bin/appmap`, else
 `appmap` on `PATH`. In a monorepo, pass `--dir packages/<name>/gold_traces`.
 
+If the CLI is missing, do not install it some other way. Follow
+**appmap-setup**, Phase 0. If that fails, stop and report to the user as
+Phase 0 describes.
+
 It prints a short summary and where the results are:
 
 ```

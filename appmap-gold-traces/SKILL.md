@@ -27,6 +27,12 @@ history, compares them, and writes the interpreted review.
 This is the *baseline-maintenance* layer over AppMap. To make recordings, see
 **appmap-record**; to **review** a change, see **appmap-review**.
 
+## If a tool is missing
+
+This skill needs the AppMap CLI and the project's language agent. If one is
+missing or too old, do not install it some other way. Follow **appmap-setup**,
+Phase 0. If that fails, stop and report to the user as Phase 0 describes.
+
 ## How it works
 
 The model is **curate → record → bless**, with the diff-and-review delegated to

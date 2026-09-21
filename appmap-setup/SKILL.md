@@ -35,7 +35,11 @@ exist, the repo has been set up before: run
 `node "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manage.mjs" plan --dir gold_traces`
 to see the record commands, and skip to whichever phase is still missing.
 
-## Phase 0 — Tools and environment (do these in parallel, fail fast)
+## Phase 0 — Tools and environment
+
+Run these checks first, in parallel. If a check fails and the install listed
+for it below does not fix it, stop before Phase 1 and tell the user (see "If a
+tool cannot be installed").
 
 The AppMap tools must be at the location the other skills and the gold-traces
 engine look in first:
@@ -45,20 +49,131 @@ engine look in first:
 ls ~/.appmap/lib/java/appmap.jar      # Java projects only: the agent jar
 ```
 
-If either is missing, install the AppMap extension for VS Code or JetBrains
-and open the project once. The extension downloads both and keeps them
-up to date.
+Each tool has one source. This table is the complete list:
 
-If you don't have access to an IDE, you can instead fetch https://raw.githubusercontent.com/getappmap/appmap-js/release-manifests/appmap-latest.json
-then find the asset entry matching this machine's OS/arch (appmap-linux-x64, 
-appmap-linux-arm64, appmap-macos-x64, appmap-macos-arm64, or appmap-win-x64.exe),
-download its url, verify the download's sha256 against the entry's digest, 
-chmod +x it, put it on PATH as appmap, and confirm with appmap --version.
+| Tool | Where it comes from |
+| --- | --- |
+| AppMap CLI | the release manifest (below) |
+| Java agent, `appmap.jar` | https://github.com/getappmap/appmap-java/releases (below) |
+| Maven plugin | resolved by Maven, the way `languages/java.md` in **appmap-record** shows. Releases: https://github.com/getappmap/appmap-maven-plugin/releases |
+| Gradle plugin | resolved by Gradle, the same way. Releases: https://github.com/getappmap/appmap-gradle-plugin/releases |
+| Ruby agent | the `appmap` gem from RubyGems, through Bundler |
+| Python agent | the `appmap` package from PyPI, through the project's package manager |
+| Node agent | the `appmap-node` package from npm, through `npx` or the project's package manager |
 
-Ruby, Python, and Node agents are project dependencies, added the way 
-**appmap-record** describes.
+### CLI and Java agent
 
-Then confirm the project's build toolchain works with the versions the project
+The AppMap extensions for VS Code and JetBrains install both tools to
+`~/.appmap`, so they may already be there. If the checks above pass, there is
+nothing to install.
+
+If a tool is missing or too old, download it as described here. Go ahead
+without asking, then tell the user what you installed and where. Do not install
+an IDE extension or launch an IDE yourself. Do not install the CLI from npm;
+the skills and the engine look in `~/.appmap` first, so that is the one place
+it goes.
+
+Each tool is a versioned file plus a link with a fixed name:
+
+```
+~/.appmap/bin/appmap           -> ~/.appmap/lib/appmap/appmap-v<version>
+~/.appmap/lib/java/appmap.jar  -> ~/.appmap/lib/java/appmap-<version>.jar
+```
+
+CLI:
+
+1. Fetch https://raw.githubusercontent.com/getappmap/appmap-js/release-manifests/appmap-latest.json.
+   The version is the end of `tag_name` (`@appland/appmap-v3.204.0` is 3.204.0).
+2. Find the asset for this machine: `appmap-linux-x64`, `appmap-linux-arm64`,
+   `appmap-macos-x64`, `appmap-macos-arm64`, or `appmap-win-x64.exe`.
+3. Download its `url` and check the file's sha256 against the entry's `digest`.
+   If they differ, delete the file and stop.
+4. Install it:
+
+```sh
+mkdir -p ~/.appmap/bin ~/.appmap/lib/appmap
+mv <download> ~/.appmap/lib/appmap/appmap-v<version>
+chmod +x ~/.appmap/lib/appmap/appmap-v<version>
+ln -sf ~/.appmap/lib/appmap/appmap-v<version> ~/.appmap/bin/appmap
+~/.appmap/bin/appmap --version
+```
+
+On Windows, copy the file to `~/.appmap/bin/appmap.exe` instead of linking it.
+
+Java agent (Java projects only):
+
+1. Fetch https://api.github.com/repos/getappmap/appmap-java/releases/latest and
+   find the asset named `appmap-<version>.jar`.
+2. Download its `browser_download_url` and check the file's sha256 against the
+   asset's `digest`. If they differ, delete the file and stop.
+3. Install it:
+
+```sh
+mkdir -p ~/.appmap/lib/java
+mv <download> ~/.appmap/lib/java/appmap-<version>.jar
+ln -sf ~/.appmap/lib/java/appmap-<version>.jar ~/.appmap/lib/java/appmap.jar
+```
+
+### Maven and Gradle plugins
+
+The build tool downloads the plugin from its usual repository once the plugin
+is in `pom.xml` or `build.gradle`. Use the releases page only to look up the
+current version number. If the build cannot download the plugin, stop and tell
+the user. The plugin jar is on the releases page, so the user or whoever runs
+their internal repository can add it there. Do not load a plugin jar into the
+build by hand.
+
+### Ruby, Python, and Node agents
+
+These are project dependencies. They must come from RubyGems, PyPI, or npm,
+through the package manager the project already uses. **appmap-record** has the
+command for each language. Never install one from a git URL, a downloaded
+archive, or a copy found on disk.
+
+### If a tool cannot be installed
+
+The sources above are the complete list. If they fail, stop and tell the user.
+Do not look for another way.
+
+A failed install almost always has a cause only the user can fix: a proxy, a
+firewall, a private package registry, a missing permission. A setup built on a
+workaround also gets committed into `appmap.yml`, the build files, and the
+manifest, where it breaks on every other machine.
+
+One retry is fine when the error is clearly temporary (a timeout, a dropped
+connection). After that, stop.
+
+Do not:
+
+- install the CLI from npm, Homebrew, or a Docker image
+- install an IDE extension, or launch an IDE or any other desktop app
+- download any AppMap tool from a URL this section does not name
+- copy a tool out of another project or a local cache
+- build any AppMap tool from source
+- use an older version because the current one will not download
+- turn off checksum or TLS checks, or change proxy, registry, or plugin
+  repository settings
+- carry on with a CLI older than 3.201, or move to the next phase without the
+  tool
+
+When you stop, tell the user:
+
+1. which tool is missing
+2. the exact command you ran and the error text
+3. the likely cause, if the error shows one
+4. what they can do about it (allow the host, add the package or plugin to
+   their internal registry, or install the AppMap IDE extension themselves,
+   which downloads the CLI and the Java agent)
+
+If the user then asks for a different method, use it.
+
+This rule covers getting the tools. Once they are installed, fixing a recording
+that produces no output is normal work; use the Troubleshooting sections in
+**appmap-record**.
+
+### Build toolchain
+
+Confirm the project's build toolchain works with the versions the project
 expects, and the database, if the build or tests need one.
 
 ## Phase 1 — Build and test as-is

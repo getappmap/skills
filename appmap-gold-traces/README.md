@@ -102,7 +102,7 @@ projection-quiet grading is ever wanted as a deterministic signal, it belongs in
 **Future home — `appmap golden`.** The gold-trace lifecycle (manifest + committed
 baselines + record-config + digest-gated bless) is generic, so it ultimately belongs in
 the CLI as `appmap golden record|status|bless`, built on the existing
-`compare` / `SequenceDiagramDigest`. Then it ships and versions with `@appland/appmap`,
+`compare` / `SequenceDiagramDigest`. Then it ships and versions with the AppMap CLI,
 the layout/schema become CLI conventions, and both skills become prompts + thin
 invocations. The only project-specific input — the record command — stays as config the
 CLI reads.

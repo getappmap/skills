@@ -47,8 +47,7 @@ ls ~/.appmap/lib/java/appmap.jar      # Java projects only: the agent jar
 
 If either is missing, install the AppMap extension for VS Code or JetBrains
 and open the project once. The extension downloads both and keeps them
-up to date. Do not install the CLI from npm as a substitute; nothing keeps
-that copy current.
+up to date.
 
 If you don't have access to an IDE, you can instead fetch https://raw.githubusercontent.com/getappmap/appmap-js/release-manifests/appmap-latest.json
 then find the asset entry matching this machine's OS/arch (appmap-linux-x64, 

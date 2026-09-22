@@ -705,12 +705,16 @@ async function snapshotAppmaps(dir) {
         await walk(full);
       } else if (dirent.name.endsWith('.appmap.json')) {
         const stat = await fs.stat(full);
-        snapshot.set(path.relative(dir, full), `${stat.mtimeMs}:${stat.size}`);
+        snapshot.set(normalizeAppMapPath(path.relative(dir, full)), `${stat.mtimeMs}:${stat.size}`);
       }
     }
   }
   await walk(dir);
   return snapshot;
+}
+
+function normalizeAppMapPath(relPath) {
+  return relPath.replace(/\\/g, '/');
 }
 
 // Paths new in `after` or whose signature changed — i.e. what the record run wrote.
@@ -774,11 +778,8 @@ function sanitizeAppMap(env, appmapFile) {
   try {
     runCommandQuiet(bin, [...prefix, 'sanitize', ...allowArgs, appmapFile], { cwd: env.workingDir });
   } catch (err) {
-    // `sanitize` shipped in @appland/appmap 3.201.0; an older CLI fails here.
-    throw new Error(
-      `${err.message}\n\nThe 'sanitize' command requires @appland/appmap >= 3.201.0. ` +
-        `Update the CLI, or point 'commands.appmap_cli' at a released version >= 3.201.0.`
-    );
+    // `sanitize` shipped in AppMap CLI 3.201.0; an older CLI fails here.
+    throw new Error(`${err.message}\n\nThe 'sanitize' command requires AppMap CLI 3.201.0 or later.`);
   }
 }
 
@@ -1162,7 +1163,7 @@ function parseYaml(text, filename = 'manifest.yaml') {
 // The appmap-review skill's helper (appmap-review/assets/review.mjs) reuses the
 // manifest reader, the appmap.yml lookup, and the CLI resolution from here.
 export {
-  parseYaml, diagramDigest, changedAppmaps, assessAppMap, coverageOf, coverageDelta,
+  parseYaml, diagramDigest, changedAppmaps, assessAppMap, coverageOf, coverageDelta, normalizeAppMapPath,
   loadManifest, locateAppmap, defaultAppmapCli,
 };
 

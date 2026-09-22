@@ -235,9 +235,13 @@ test('rspec: line-number entries share one run as file:line; named entries get -
   );
 });
 
-test('rspec: sets APPMAP=true in the group environment', () => {
-  const [group] = planRecordCommands({ framework: 'rspec' }, [entry('spec/a_spec.rb', '12')]);
-  assert.deepEqual(group.env, { APPMAP: 'true' });
+// appmap-ruby's test hooks enable recording on their own. APPMAP=true would also
+// turn on request recording, so the Ruby frameworks set nothing.
+test('ruby frameworks: no environment is set; the test hooks enable recording', () => {
+  for (const framework of ['rspec', 'minitest', 'rails-test']) {
+    const [group] = planRecordCommands({ framework }, [entry('spec/a_spec.rb', '12')]);
+    assert.deepEqual(group.env, {}, framework);
+  }
 });
 
 test('rails-test: file:line in one run, method names per file with -n', () => {

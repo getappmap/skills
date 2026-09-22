@@ -60,7 +60,10 @@ import { spawnSync } from 'node:child_process';
 //   Java    Prefer the project's wrapper script (`mvnw`, `gradlew`) when present.
 //
 // Node needs nothing: `npx` resolves node_modules/.bin under npm, yarn, and pnpm.
-// Ruby needs nothing: `bundle exec` is universal.
+// Ruby needs nothing: `bundle exec` is universal, and appmap-ruby's rspec and
+// minitest hooks turn recording on by themselves. Do not set APPMAP=true for
+// them: that enables every recording method, requests included, and the gem
+// warns about it.
 
 function fileExists(cwd, relative) {
   try {
@@ -190,7 +193,7 @@ export const FRAMEWORKS = {
 
   rspec: {
     runner: 'bundle exec rspec',
-    env: { APPMAP: 'true' },
+    env: {},
     testName: 'the example description (matched with -e), or the example\'s line number',
     plan(entries) {
       const { lines, names } = splitLinesAndNames(entries);
@@ -208,7 +211,7 @@ export const FRAMEWORKS = {
 
   minitest: {
     runner: 'bundle exec ruby -Itest',
-    env: { APPMAP: 'true' },
+    env: {},
     testName: 'the test method name (test_foo); one invocation per test file',
     plan(entries) {
       return byFile(entries).map(([file, fileEntries]) => {
@@ -221,7 +224,7 @@ export const FRAMEWORKS = {
 
   'rails-test': {
     runner: 'bin/rails test',
-    env: { APPMAP: 'true' },
+    env: {},
     testName: 'the test method name, or the test\'s line number',
     plan(entries) {
       const { lines, names } = splitLinesAndNames(entries);

@@ -21,6 +21,7 @@ const entry = (test_file, test_name) => ({ test_file, test_name });
 // The plans below describe the sh command line. Pin the platform, so the same
 // expectations hold on a Windows runner; the cmd.exe forms have their own tests.
 const POSIX = 'linux';
+const WIN = 'win32';
 
 function commandsFor(commands, entries) {
   return planRecordCommands(commands, entries, { platform: POSIX }).map((group) => group.command);
@@ -33,6 +34,30 @@ test('shellQuote: plain selectors pass through, regexes and spaces are single-qu
   assert.equal(shellQuote('-Dtest=FooTest#a+b,BarTest#c'), '-Dtest=FooTest#a+b,BarTest#c');
   assert.equal(shellQuote('(a|b)'), "'(a|b)'");
   assert.equal(shellQuote("it's fine"), "'it'\\''s fine'");
+});
+
+// cmd.exe: the argument is double-quoted for the program and every character
+// cmd.exe acts on, the quotes included, is escaped with ^ so cmd.exe passes the
+// string through untouched. The round trip through the real shell is checked below.
+test('shellQuote (Windows): plain selectors pass through, the rest is quoted for cmd.exe', () => {
+  assert.equal(shellQuote('tests/test_a.py::test_x', WIN), 'tests/test_a.py::test_x');
+  assert.equal(shellQuote('-Dtest=FooTest#a+b,BarTest#c', WIN), '-Dtest=FooTest#a+b,BarTest#c');
+  assert.equal(shellQuote('creates an order', WIN), '^"creates an order^"');
+  assert.equal(shellQuote('(a|b)', WIN), '^"^(a^|b^)^"');
+  assert.equal(shellQuote('it\'s "quoted"', WIN), '^"it\'s \\^"quoted\\^"^"');
+  assert.equal(shellQuote('a & b < c > d ^ e', WIN), '^"a ^& b ^< c ^> d ^^ e^"');
+  // A % can name a variable to cmd.exe, so it is never left bare there.
+  assert.equal(shellQuote('100%', WIN), '^"100^%^"');
+  assert.equal(shellQuote('100%', POSIX), '100%');
+  // Only a backslash before a quote, or at the end, is doubled, so the program reads them as written.
+  assert.equal(shellQuote('C:\\dir\\', WIN), '^"C:\\dir\\\\^"');
+});
+
+test('planRecordCommands (Windows): name filters with spaces or a regex union are quoted for cmd.exe', () => {
+  const jest = planRecordCommands({ framework: 'jest' }, [entry('a.test.js', 'adds'), entry('a.test.js', 'removes')], { platform: WIN });
+  assert.equal(jest[0].command, 'npx appmap-node npx jest a.test.js -t ^"^(adds^|removes^)^"');
+  const rspec = planRecordCommands({ framework: 'rspec' }, [entry('spec/a_spec.rb', 'creates an order')], { platform: WIN });
+  assert.equal(rspec[0].command, 'bundle exec rspec spec/a_spec.rb -e ^"creates an order^"');
 });
 
 test('escapeRegex: test titles with regex characters are matched literally', () => {
@@ -117,8 +142,6 @@ test('detect: planRecordCommands uses the cwd it is given', (t) => {
 
 // --- launcher detection on Windows: the record command runs through cmd.exe ----
 
-const WIN = 'win32';
-
 test('detect (Windows): a venv is found by its .exe and named with backslashes', (t) => {
   const dir = projectDir(t, ['.venv/Scripts/appmap-python.exe']);
   assert.equal(resolveRunner({ framework: 'pytest' }, dir, WIN), '.venv\\Scripts\\appmap-python .venv\\Scripts\\pytest');
@@ -159,6 +182,29 @@ test('detect (Windows): planRecordCommands passes the platform through', (t) => 
   const dir = projectDir(t, ['.venv/Scripts/appmap-python.exe']);
   const [group] = planRecordCommands({ framework: 'pytest' }, [entry('tests/test_a.py', 'test_x')], { cwd: dir, platform: WIN });
   assert.equal(group.command, '.venv\\Scripts\\appmap-python .venv\\Scripts\\pytest tests/test_a.py::test_x');
+});
+
+// Every quoted argument, run through this machine's real shell (sh, or cmd.exe
+// on Windows) the way the engine runs the record command, must reach the program
+// as the manifest wrote it. A Node script prints its argv for the comparison.
+test('shellQuote: arguments survive the round trip through the real shell on this platform', (t) => {
+  const dir = projectDir(t, []);
+  fs.writeFileSync(path.join(dir, 'argv.mjs'), 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+  const args = [
+    'tests/test_a.py::test_x',
+    'creates an order',
+    '(adds|removes)',
+    '/^(test_merge|test_total)$/',
+    'rejects a bad token \\(401\\)',
+    'it\'s "quoted"',
+    'a & b < c > d ^ e',
+    '100% done',
+    'ends with \\',
+  ];
+  const command = ['node', 'argv.mjs', ...args.map((arg) => shellQuote(arg))].join(' ');
+  const result = spawnSync(command, { cwd: dir, shell: true, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), args, command);
 });
 
 // The detected wrapper launcher, run through this machine's real shell (sh, or

@@ -396,7 +396,10 @@ before anything else; it is a small edit:
    A `.venv/bin/appmap-python pytest` launcher should be dropped in favor of the
    detected form, which runs pytest inside the same venv. If the runner is not
    one the engine knows, keep `commands.record`; it still works, one run per
-   test.
+   test. The detected launchers differ by platform (`.venv\Scripts\...`, bare
+   `mvnw`, and `ruby bin/rails` on Windows, where the command runs through
+   `cmd.exe`), which is one more reason to leave `runner:` unset when the
+   detected form is right.
 3. Delete any `expect` and `expect_labels` lines. The engine no longer reads
    them and prints a note while they remain.
 4. Run `plan` and confirm the commands look right, then commit the migrated

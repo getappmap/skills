@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
+import { spawnSync } from 'node:child_process';
 
 import {
   FRAMEWORKS, buildCommand, planRecordCommands, resolveRunner, shellQuote, escapeRegex, frameworkNames,
@@ -107,6 +109,71 @@ test('detect: planRecordCommands uses the cwd it is given', (t) => {
   const dir = projectDir(t, ['.venv/bin/appmap-python']);
   const [group] = planRecordCommands({ framework: 'pytest' }, [entry('tests/test_a.py', 'test_x')], { cwd: dir });
   assert.equal(group.command, '.venv/bin/appmap-python .venv/bin/pytest tests/test_a.py::test_x');
+});
+
+// --- launcher detection on Windows: the record command runs through cmd.exe ----
+
+const WIN = 'win32';
+
+test('detect (Windows): a venv is found by its .exe and named with backslashes', (t) => {
+  const dir = projectDir(t, ['.venv/Scripts/appmap-python.exe']);
+  assert.equal(resolveRunner({ framework: 'pytest' }, dir, WIN), '.venv\\Scripts\\appmap-python .venv\\Scripts\\pytest');
+  assert.equal(resolveRunner({ framework: 'unittest' }, dir, WIN), '.venv\\Scripts\\appmap-python .venv\\Scripts\\python -m unittest');
+  const venv = projectDir(t, ['venv/Scripts/appmap-python.exe']);
+  assert.equal(resolveRunner({ framework: 'pytest' }, venv, WIN), 'venv\\Scripts\\appmap-python venv\\Scripts\\pytest');
+  // The .exe is what pip writes on Windows; on POSIX the venv is not found by it.
+  assert.equal(resolveRunner({ framework: 'pytest' }, dir, 'linux'), 'appmap-python pytest');
+});
+
+test('detect (Windows): wrappers are named bare, since cmd.exe rejects ./ and finds the .cmd itself', (t) => {
+  const maven = projectDir(t, ['mvnw', 'mvnw.cmd']);
+  assert.equal(resolveRunner({ framework: 'maven' }, maven, WIN), 'mvnw test');
+  assert.equal(resolveRunner({ framework: 'maven' }, maven, 'linux'), './mvnw test');
+  const gradle = projectDir(t, ['gradlew', 'gradlew.bat']);
+  assert.equal(resolveRunner({ framework: 'gradle' }, gradle, WIN), 'gradlew appmap test');
+  assert.equal(resolveRunner({ framework: 'gradle' }, gradle, 'darwin'), './gradlew appmap test');
+  // A POSIX-only wrapper is no use to cmd.exe: fall back to the tool on PATH.
+  assert.equal(resolveRunner({ framework: 'maven' }, projectDir(t, ['mvnw']), WIN), 'mvn test');
+  assert.equal(resolveRunner({ framework: 'gradle' }, projectDir(t, ['gradlew']), WIN), 'gradle appmap test');
+});
+
+test('detect (Windows): bin/rails has no extension, so it runs through ruby', (t) => {
+  const dir = projectDir(t, ['bin/rails']);
+  assert.equal(resolveRunner({ framework: 'rails-test' }, dir, WIN), 'ruby bin/rails test');
+  assert.equal(resolveRunner({ framework: 'rails-test' }, dir, 'linux'), 'bin/rails test');
+});
+
+test('detect (Windows): an explicit runner still wins, and the lock-file launchers are unchanged', (t) => {
+  const dir = projectDir(t, ['.venv/Scripts/appmap-python.exe']);
+  assert.equal(resolveRunner({ framework: 'pytest', runner: 'tox -e py -- ' }, dir, WIN), 'tox -e py -- ');
+  assert.equal(resolveRunner({ framework: 'pytest' }, projectDir(t, ['uv.lock']), WIN), 'uv run appmap-python pytest');
+  assert.equal(resolveRunner({ framework: 'pytest' }, projectDir(t, ['poetry.lock']), WIN), 'poetry run appmap-python pytest');
+  assert.equal(resolveRunner({ framework: 'pytest' }, projectDir(t, ['Pipfile']), WIN), 'pipenv run appmap-python pytest');
+});
+
+test('detect (Windows): planRecordCommands passes the platform through', (t) => {
+  const dir = projectDir(t, ['.venv/Scripts/appmap-python.exe']);
+  const [group] = planRecordCommands({ framework: 'pytest' }, [entry('tests/test_a.py', 'test_x')], { cwd: dir, platform: WIN });
+  assert.equal(group.command, '.venv\\Scripts\\appmap-python .venv\\Scripts\\pytest tests/test_a.py::test_x');
+});
+
+// The detected wrapper launcher, run through this machine's real shell (sh, or
+// cmd.exe on Windows) the way the engine runs it. This is the evidence for the
+// claims above: on Windows the bare name starts mvnw.cmd and `./mvnw` does not.
+test('detect: the wrapper launcher starts through the real shell on this platform', (t) => {
+  const dir = projectDir(t, []);
+  const windows = process.platform === 'win32';
+  const script = path.join(dir, windows ? 'mvnw.cmd' : 'mvnw');
+  fs.writeFileSync(script, windows ? '@echo wrapper ran %*\r\n' : '#!/bin/sh\necho wrapper ran "$@"\n');
+  if (!windows) fs.chmodSync(script, 0o755);
+
+  const run = (command) => spawnSync(command, { cwd: dir, shell: true, encoding: 'utf8' });
+  const detected = run(resolveRunner({ framework: 'maven' }, dir));
+  assert.equal(detected.status, 0, detected.stderr);
+  assert.match(detected.stdout, /wrapper ran test/);
+  if (windows) {
+    assert.notEqual(run('./mvnw test').status, 0, "cmd.exe should not accept './mvnw'");
+  }
 });
 
 // --- batch limits: a count from the manifest, a length from the machine -------

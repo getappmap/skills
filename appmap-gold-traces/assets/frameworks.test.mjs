@@ -30,10 +30,10 @@ function commandsFor(commands, entries) {
 // --- shell quoting ----------------------------------------------------------
 
 test('shellQuote: plain selectors pass through, regexes and spaces are single-quoted', () => {
-  assert.equal(shellQuote('tests/test_a.py::test_x'), 'tests/test_a.py::test_x');
-  assert.equal(shellQuote('-Dtest=FooTest#a+b,BarTest#c'), '-Dtest=FooTest#a+b,BarTest#c');
-  assert.equal(shellQuote('(a|b)'), "'(a|b)'");
-  assert.equal(shellQuote("it's fine"), "'it'\\''s fine'");
+  assert.equal(shellQuote('tests/test_a.py::test_x', POSIX), 'tests/test_a.py::test_x');
+  assert.equal(shellQuote('-Dtest=FooTest#a+b,BarTest#c', POSIX), '-Dtest=FooTest#a+b,BarTest#c');
+  assert.equal(shellQuote('(a|b)', POSIX), "'(a|b)'");
+  assert.equal(shellQuote("it's fine", POSIX), "'it'\\''s fine'");
 });
 
 // cmd.exe: the argument is double-quoted for the program and every character

@@ -54,7 +54,7 @@ commands:
   # substituted, and it cannot choose where the recording lands — the recorder
   # decides that, under appmap_dir. `framework` and `record` are exclusive.
   #
-  #   record: "APPMAP=true bundle exec cucumber {test_file} --name {test_name}"
+  #   record: "bundle exec cucumber {test_file} --name {test_name}"
 
   # Extra environment variables for the record command (optional).
   record_env:

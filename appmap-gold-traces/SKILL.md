@@ -396,7 +396,10 @@ before anything else; it is a small edit:
    A `.venv/bin/appmap-python pytest` launcher should be dropped in favor of the
    detected form, which runs pytest inside the same venv. If the runner is not
    one the engine knows, keep `commands.record`; it still works, one run per
-   test.
+   test. The detected launchers differ by platform (`.venv\Scripts\...`, bare
+   `mvnw`, and `ruby bin/rails` on Windows, where the command runs through
+   `cmd.exe`), which is one more reason to leave `runner:` unset when the
+   detected form is right.
 3. Delete any `expect` and `expect_labels` lines. The engine no longer reads
    them and prints a note while they remain.
 4. Run `plan` and confirm the commands look right, then commit the migrated
@@ -501,7 +504,7 @@ deleted.
 | `commands.args` *(optional)* | Flags appended after the test selectors (for example `-q`). |
 | `commands.batch_size` *(optional)* | Most tests that may share one run. Unset means as many as the framework and the shell allow. Set it to keep runs small on purpose, for example to isolate a flaky test. Command length is limited separately and automatically: the engine measures this machine's shell limit (`ARG_MAX` minus the environment on POSIX, the 8 KB line on Windows) and splits any run that would exceed it. |
 | `commands.record` | For a runner the registry does not know: a shell template to record ONE test, run from the gold_traces parent dir with `{test_file}` and `{test_name}` substituted, once per entry. Exclusive with `commands.framework`. |
-| `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). Merged over the framework's own defaults, such as `APPMAP=true` for rspec and minitest. |
+| `commands.record_env` | Extra env vars for the record command (e.g. a recorder enable flag). Merged over the framework's own defaults. Not needed for rspec, minitest, or rails-test: appmap-ruby's test hooks enable recording by themselves, and `APPMAP=true` would also turn on request recording. |
 | `commands.appmap_cli` | AppMap CLI the engine runs — exports the bless-gating sequence diagram **and** sanitizes each recording before it is committed (`sanitize` needs **AppMap CLI ≥ 3.201.0**). **Leave unset**: it auto-discovers `~/.appmap/bin/appmap` (where the IDE extensions install it), else `appmap` on `PATH`. A committed value is machine-specific config in a shared file (breaks on other machines/platforms); set it only for an unusual CLI location or a custom-compiled CLI (appmap-js itself sets `node built/cli.js`). |
 | `expand` *(optional)* | Package code-object ids to render at function granularity (`--expand`). Default empty — package granularity already catches function changes. |
 | `allow_values` *(optional)* | Values `appmap sanitize` keeps verbatim in blessed baselines (the engine passes them via `--allow-file`), exact whole-value match. Curate small public vocabularies only (enum state/role names); never anything that could identify a person or authenticate a request. |

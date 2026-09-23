@@ -62,6 +62,18 @@ async function main() {
     baselineRoot: path.join(goldDir, 'baseline'),
   };
 
+  // `init` and `doctor` dispatch before the manifest loads: init is what
+  // creates it, and doctor's whole job is to explain, actionably, the states
+  // in which loading it would fail.
+  if (command === 'init') {
+    await initGoldTraces(paths, options);
+    return;
+  }
+  if (command === 'doctor') {
+    process.exitCode = await doctorCommand(paths, options);
+    return;
+  }
+
   const config = await loadManifest(paths.manifestPath);
   // Neither the working dir nor the recordings dir is configured — both are derived
   // from the layout. The record/appmap commands run from the gold_traces parent dir;
@@ -130,7 +142,8 @@ async function main() {
     return;
   }
   throw new Error(
-    `Unknown command: ${command}. This engine maintains baselines ('update'), checks ` +
+    `Unknown command: ${command}. This engine checks that a project is set up ` +
+      `('doctor'), seeds the manifest ('init'), maintains baselines ('update'), checks ` +
       `trace suitability ('check'), finds a test's appmap_path ('discover'), ` +
       `answers which baseline runs a piece of code ('covers'), ` +
       `and shows the record commands it would run ('plan'). ` +
@@ -150,6 +163,10 @@ function parseArgs(args) {
     testName: null,
     name: null,
     fresh: false,
+    framework: null,
+    runner: null,
+    args: null,
+    recordCommand: null,
   };
 
   let command = null;
@@ -203,6 +220,26 @@ function parseArgs(args) {
       options.fresh = true;
       continue;
     }
+    if (arg === '--framework') {
+      index += 1;
+      options.framework = args[index] ?? null;
+      continue;
+    }
+    if (arg === '--runner') {
+      index += 1;
+      options.runner = args[index] ?? null;
+      continue;
+    }
+    if (arg === '--args') {
+      index += 1;
+      options.args = args[index] ?? null;
+      continue;
+    }
+    if (arg === '--record-command') {
+      index += 1;
+      options.recordCommand = args[index] ?? null;
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -211,6 +248,8 @@ function parseArgs(args) {
 
 function printHelp() {
   console.log(`Usage:
+  node <skill>/assets/manage.mjs doctor   [--dir DIR]
+  node <skill>/assets/manage.mjs init     [--dir DIR] [--framework NAME] [--runner CMD] [--args FLAGS | --record-command TEMPLATE]
   node <skill>/assets/manage.mjs update   [--dir DIR] [--only TEST] [--record] [--dry-run]
   node <skill>/assets/manage.mjs check    [--dir DIR] [--only TEST] [--record]
   node <skill>/assets/manage.mjs discover [--dir DIR] --test-file FILE --test-name NAME
@@ -220,6 +259,16 @@ function printHelp() {
 Maintains the committed gold-trace baselines. Diffing/reviewing a change is the
 appmap-review skill's job, not this engine's.
 
+  doctor    Preflight: is this project set up for gold traces? Checks the
+            manifest, appmap.yml, the record commands, and the AppMap CLI, and
+            names the skill that fixes whatever is missing (usually
+            appmap-setup). Run it first in any session that touches gold
+            traces; a non-zero exit means stop and run the named skill.
+  init      Create DIR (baseline/appmaps included) and write a fresh
+            manifest.yaml — no shell copying or text editing needed. Pass the
+            record configuration directly: --framework (with optional --runner
+            and --args), or --record-command for a runner the registry does not
+            know. Refuses to overwrite an existing manifest.
   update    Re-bless baselines, but only the traces whose behavior changed
             (digest-gated, so untouched baselines stay byte-identical). Seeds a
             baseline for any entry that doesn't have one yet.
@@ -248,6 +297,11 @@ Options:
   --test-name NAME    discover: the test function/case name.
   --name NAME         covers: part of a class or method name to look for.
   --fresh             covers: search the recordings under appmap_dir, not the baselines.
+  --framework NAME    init: the test framework to write into commands.framework.
+  --runner CMD        init: launcher override written as commands.runner.
+  --args FLAGS        init: flags written as commands.args.
+  --record-command T  init: per-test shell template written as commands.record
+                      (with {test_file} and {test_name}); exclusive with --framework.
   --help              Show this help.
 
 Recording is configured in manifest.yaml under 'commands', one of two ways:
@@ -269,7 +323,12 @@ ${describeFrameworks()}
 async function loadManifest(manifestPath) {
   const raw = await readFileOrNull(manifestPath);
   if (raw === null) {
-    throw new Error(`Missing gold-traces manifest: ${manifestPath}\nBootstrap the gold-traces directory first (see the appmap-gold-traces skill).`);
+    throw new Error(
+      `Missing gold-traces manifest: ${manifestPath}\n` +
+        `This project is not set up for gold traces. Run the appmap-setup skill first ` +
+        `(in an agent chat: /appmap-setup): it verifies that recording works and writes ` +
+        `the record commands into the manifest. Do not create the manifest by hand.`,
+    );
   }
   const manifest = parseYaml(raw, manifestPath);
   if (!manifest || typeof manifest !== 'object') {
@@ -358,10 +417,241 @@ async function locateAppmap(startDir) {
     }
     const parent = path.dirname(dir);
     if (parent === dir) {
-      throw new Error(`No appmap.yml found in any ancestor of ${startDir}. The gold-traces dir must live inside an AppMap project.`);
+      throw new Error(
+        `No appmap.yml found in any ancestor of ${startDir}. The gold-traces dir must ` +
+          `live inside an AppMap project. If this repository has never recorded AppMap ` +
+          `data, it is not set up yet: run the appmap-setup skill first (/appmap-setup).`,
+      );
     }
     dir = parent;
   }
+}
+
+// ---------------------------------------------------------------------------
+// doctor — setup preflight
+// ---------------------------------------------------------------------------
+//
+// Answers one question: is this project set up for gold traces? Each check
+// names the skill that fixes it, so a session that lands here mid-task routes
+// the user to appmap-setup instead of improvising config by hand — the setup
+// state is deliberate (three commits: config, exclusions, commands) and the
+// other skills must refuse to run without it, not recreate pieces of it.
+// Exit 0 means recording is configured; an empty entries list is reported but
+// is not a failure (setup leaves it empty on purpose; curation is the
+// appmap-gold-traces skill's job).
+
+const SANITIZE_MIN_CLI = '3.201.0';
+
+async function doctorCommand(paths) {
+  const ok = (what, detail) => console.log(`ok       ${what}  ${detail}`);
+  const fail = (what, detail, fix) => {
+    console.log(`MISSING  ${what}  ${detail}`);
+    console.log('');
+    console.log(fix.trimEnd());
+    console.log('');
+    console.log('Not set up. Stop here — do not create or edit this configuration by hand.');
+    return 1;
+  };
+
+  const setupFix =
+    'This repository is not set up for AppMap gold traces. Run the appmap-setup\n' +
+    'skill first (in an agent chat: /appmap-setup). It installs the AppMap tools,\n' +
+    'proves recording works on one unit and one integration test, prunes noise,\n' +
+    'and writes the record commands into the manifest. Every other AppMap skill\n' +
+    'depends on that state.';
+
+  const manifestRel = path.relative(paths.projectRoot, paths.manifestPath) || paths.manifestPath;
+  const raw = await readFileOrNull(paths.manifestPath);
+  if (raw === null) {
+    return fail('manifest       ', `${manifestRel} not found (looked from ${paths.projectRoot})`, setupFix);
+  }
+  let config;
+  try {
+    config = await loadManifest(paths.manifestPath);
+  } catch (error) {
+    return fail('manifest       ', `${manifestRel} cannot be read: ${error.message.split('\n')[0]}`, setupFix);
+  }
+  ok('manifest       ', `${manifestRel} (schema_version ${config.schema_version})`);
+
+  let located;
+  try {
+    located = await locateAppmap(paths.goldDir);
+  } catch {
+    return fail('appmap.yml     ', `no appmap.yml in any ancestor of ${paths.goldDir}`, setupFix);
+  }
+  ok('appmap.yml     ', `${path.join(located.appmapYmlDir, 'appmap.yml')} (appmap_dir: ${located.appmapDir})`);
+
+  if (!config.framework && !config.record) {
+    return fail(
+      'record commands',
+      `neither commands.framework nor commands.record is set in ${manifestRel}`,
+      setupFix + '\n\nIf setup already ran, only its last phase is missing: the commands block.',
+    );
+  }
+  ok('record commands', config.framework ? `framework ${config.framework}` : 'record template');
+
+  const cli = config.appmap_cli;
+  const [bin, ...prefix] = cli.split(/\s+/).filter(Boolean);
+  const result = spawnSync(bin, [...prefix, '--version'], { encoding: 'utf8' });
+  const version = result.status === 0 ? (result.stdout.match(/\d+\.\d+\.\d+/) ?? [null])[0] : null;
+  if (result.error || result.status !== 0 || !version) {
+    return fail(
+      'appmap CLI     ',
+      `could not run '${cli} --version'`,
+      'The AppMap CLI is not installed where the skills look for it\n' +
+        '(~/.appmap/bin/appmap, else `appmap` on PATH). The appmap-setup skill\'s\n' +
+        'Phase 0 installs it: via the AppMap IDE extension, or by downloading the\n' +
+        'release binary. Run the appmap-setup skill (/appmap-setup).',
+    );
+  }
+  if (compareVersionStrings(version, SANITIZE_MIN_CLI) < 0) {
+    return fail(
+      'appmap CLI     ',
+      `${cli} is ${version}`,
+      `AppMap CLI ${SANITIZE_MIN_CLI} or later is required (it added 'sanitize', which\n` +
+        'gates every bless). Update the CLI: the IDE extension keeps ~/.appmap/bin/appmap\n' +
+        'current, or download the latest release binary (appmap-setup, Phase 0).',
+    );
+  }
+  ok('appmap CLI     ', `${cli} (${version})`);
+
+  if (config.entries.length === 0) {
+    console.log('');
+    console.log(
+      'Setup is complete; no gold traces are curated yet. Run the appmap-gold-traces\n' +
+        'skill to curate the first entries (its Bootstrap section, from "Curate the\n' +
+        'entries").',
+    );
+    return 0;
+  }
+  let missing = 0;
+  for (const entry of config.entries) {
+    if (!entry.appmap_path) {
+      missing += 1;
+      continue;
+    }
+    const baseline = path.join(paths.baselineRoot, 'appmaps', normalizeAppMapPath(String(entry.appmap_path)));
+    if ((await readFileOrNull(baseline)) === null) missing += 1;
+  }
+  ok('entries        ', `${config.entries.length} curated, ${config.entries.length - missing} with a committed baseline`);
+  if (missing > 0) {
+    console.log('');
+    console.log(
+      `${missing} entr${missing === 1 ? 'y has' : 'ies have'} no committed baseline. ` +
+        `Seed with: node <skill>/assets/manage.mjs update --dir ${manifestRel.split(path.sep).slice(0, -1).join('/') || 'gold_traces'} --record`,
+    );
+  }
+  return 0;
+}
+
+function compareVersionStrings(a, b) {
+  const parts = (version) => version.split('.').map(Number);
+  const [x, y] = [parts(a), parts(b)];
+  for (let index = 0; index < Math.max(x.length, y.length); index += 1) {
+    const difference = (x[index] ?? 0) - (y[index] ?? 0);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// init — seed the gold-traces directory
+// ---------------------------------------------------------------------------
+//
+// Writes the manifest itself so setup needs no shell copying and no text
+// editing — `cp`, `sed`, and friends are not available everywhere the skills
+// run (Windows cmd.exe, restricted agents). The record configuration comes in
+// as flags; anything not passed is left as commented guidance in the file.
+
+async function initGoldTraces(paths, options) {
+  if ((await readFileOrNull(paths.manifestPath)) !== null) {
+    throw new Error(
+      `${paths.manifestPath} already exists; init refuses to overwrite it.\n` +
+        `Edit the existing file, or delete it first to start over.`,
+    );
+  }
+  if (options.framework && options.recordCommand) {
+    throw new Error(`Pass one of --framework or --record-command, not both.`);
+  }
+  if (options.framework && !frameworkNames().includes(options.framework)) {
+    throw new Error(`Unknown framework '${options.framework}'. Supported: ${frameworkNames().join(', ')}.`);
+  }
+  if ((options.runner || options.args) && options.recordCommand) {
+    throw new Error(`--runner and --args go with --framework; a --record-command template carries its own launcher and flags.`);
+  }
+
+  await fs.mkdir(path.join(paths.baselineRoot, 'appmaps'), { recursive: true });
+  await fs.writeFile(paths.manifestPath, renderManifestSeed(options));
+
+  const manifestRel = path.relative(paths.projectRoot, paths.manifestPath) || paths.manifestPath;
+  console.log(`Created ${manifestRel} and ${path.relative(paths.projectRoot, path.join(paths.baselineRoot, 'appmaps'))}${path.sep}`);
+  if (!options.framework && !options.recordCommand) {
+    console.log(
+      `The commands block is not configured yet: re-run init with --framework NAME\n` +
+        `(after deleting the file), or fill in 'commands' in ${manifestRel}. See --help\n` +
+        `for the frameworks and their defaults.`,
+    );
+  } else {
+    console.log(`Confirm the record commands with: plan --dir ${options.dir}`);
+  }
+  console.log(`Curating entries is the appmap-gold-traces skill's job; it starts from this file.`);
+}
+
+function renderManifestSeed(options) {
+  // Free-form values (a launcher, flags, a shell template) are always written
+  // double-quoted: JSON string syntax is valid YAML, and quoting untangles every
+  // edge (leading '- ', ': ', '#', braces). Framework names are registry-validated
+  // identifiers and stay bare.
+  const yamlValue = (value) => JSON.stringify(value);
+  const lines = [
+    '# Gold-traces manifest — managed by the appmap-gold-traces skill.',
+    '#',
+    '# One file describes the whole gold set: HOW to record (commands) and WHAT to',
+    '# record (entries). Paths are NOT configured — they are derived: the record and',
+    '# appmap commands run from this file\'s parent directory, and recordings are',
+    '# read from the nearest-ancestor appmap.yml (its directory + its appmap_dir).',
+    '',
+    'schema_version: 2',
+    '',
+    'commands:',
+  ];
+  if (options.recordCommand) {
+    lines.push(
+      '  # A full shell template, run once per test with {test_file} and {test_name}',
+      '  # substituted. It cannot choose where the recording lands — the recorder',
+      '  # decides that, under appmap_dir.',
+      `  record: ${yamlValue(options.recordCommand)}`,
+    );
+  } else if (options.framework) {
+    lines.push(`  framework: ${options.framework}`);
+    if (options.runner) lines.push(`  runner: ${yamlValue(options.runner)}`);
+    else lines.push('  # runner:  optional; replaces the detected launcher (`plan` shows the default)');
+    if (options.args) lines.push(`  args: ${yamlValue(options.args)}`);
+    else lines.push('  # args:    optional; flags appended after the test selectors');
+  } else {
+    lines.push(
+      '  # NOT CONFIGURED YET. Name the test framework and the engine builds the',
+      '  # record commands itself (frameworks and defaults: manage.mjs --help):',
+      '  #',
+      '  #   framework: pytest',
+      '  #   runner: .venv/bin/appmap-python pytest   # optional launcher override',
+      '  #   args: -q                                 # optional flags',
+      '  #',
+      '  # Or, for a runner the registry does not know, a per-test shell template:',
+      '  #',
+      '  #   record: "bundle exec cucumber {test_file} --name {test_name}"',
+    );
+  }
+  lines.push(
+    '',
+    '# The curated recordings that form the behavior baseline. Curation is the',
+    '# appmap-gold-traces skill\'s job: get every appmap_path from its `discover`',
+    '# command — never guess one. Each entry: feature, test_file, test_name,',
+    '# appmap_path, summary.',
+    'entries:',
+    '',
+  );
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -531,7 +821,11 @@ async function rerecordEntries(env, entries) {
 
 function requireRecordConfig(env, what) {
   if (!env.config.record && !env.config.framework) {
-    throw new Error(`${what} requires 'commands.framework' or 'commands.record' in ${env.manifestPath}`);
+    throw new Error(
+      `${what} requires 'commands.framework' or 'commands.record' in ${env.manifestPath}.\n` +
+        `The record commands are written during setup: run the appmap-setup skill ` +
+        `(/appmap-setup), or see --help for the two forms.`,
+    );
   }
 }
 

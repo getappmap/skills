@@ -27,6 +27,25 @@ history, compares them, and writes the interpreted review.
 This is the *baseline-maintenance* layer over AppMap. To make recordings, see
 **appmap-record**; to **review** a change, see **appmap-review**.
 
+## First, verify the repository is set up
+
+This skill only works in a repository the **appmap-setup** skill has already set
+up. Verify that before doing anything else, in every session:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" doctor --dir gold_traces
+```
+
+`doctor` checks the manifest, `appmap.yml`, the record commands, and the AppMap
+CLI, and prints one line per check. A non-zero exit means the repository is
+**not set up**: stop, run the **appmap-setup** skill (`/appmap-setup`), and come
+back when `doctor` passes. Do not work around a failed check by creating
+`appmap.yml` or the manifest by hand, and do not reach for shell text-editing
+tools (`sed`, heredocs) to patch config — they are not available everywhere the
+skills run, and improvised config skips the verification that setup exists to
+provide. The one state `doctor` reports that belongs to *this* skill is "setup
+complete, no entries curated yet" — that is the Bootstrap below, and it exits 0.
+
 ## How it works
 
 The model is **curate → record → bless**, with the diff-and-review delegated to
@@ -289,25 +308,32 @@ node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" update --dir packages/<name>/gold_t
 
 ## Bootstrap (first time in a project)
 
-When `gold_traces/` does not yet exist:
+When `gold_traces/` does not yet exist, the repository has usually not been set
+up at all — recording is unproven and the tools may be missing. **Run the
+appmap-setup skill first**; its last phase performs steps 1–2 below and commits
+the result. Return here with `doctor` passing and start at step 3. Steps 1–2
+are documented for completeness (they are what setup runs):
 
-1. **Create the directory** and seed it from the template:
+1. **Seed the directory with the engine** — one command, no shell copying, no
+   text editing:
    ```sh
-   mkdir -p gold_traces/baseline/appmaps
-   cp "${CLAUDE_SKILL_DIR}/assets/manifest.template.yaml"  gold_traces/manifest.yaml
+   node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" init --dir gold_traces --framework <name>
    ```
-   The engine's derived work lands in `.appmap/gold-traces` (AppMap's regenerable
-   working dir). Ensure `.appmap/` is gitignored — most AppMap projects already ignore
-   it; add `.appmap/` to the repo `.gitignore` if not.
+   `init` creates `gold_traces/baseline/appmaps/` and writes `manifest.yaml`
+   with the `commands` block filled from its flags. It refuses to overwrite an
+   existing manifest. The engine's derived work lands in `.appmap/gold-traces`
+   (AppMap's regenerable working dir). Ensure `.appmap/` is gitignored — most
+   AppMap projects already ignore it; add `.appmap/` to the repo `.gitignore`
+   if not.
 
-2. **Fill in the `commands`.** Name the test framework and, if the default
-   launcher is not right for this project, the launcher:
-   ```yaml
-   commands:
-     framework: pytest                          # pytest | unittest | rspec | minitest | rails-test |
-                                                # jest | vitest | mocha | maven | gradle
-     runner: .venv/bin/appmap-python pytest     # optional: replaces the default launcher
-     args: -q                                   # optional: flags after the test selectors
+2. **Give `init` the record configuration.** Name the test framework and, if
+   the default launcher is not right for this project, the launcher:
+   ```sh
+   node "${CLAUDE_SKILL_DIR}/assets/manage.mjs" init --dir gold_traces \
+     --framework pytest \                          # pytest | unittest | rspec | minitest | rails-test |
+                                                   # jest | vitest | mocha | maven | gradle
+     --runner ".venv/bin/appmap-python pytest" \   # optional: replaces the default launcher
+     --args "-q"                                   # optional: flags after the test selectors
    ```
    The engine knows how each framework names one test and how it names several,
    so it records the whole gold set in as few runs as the framework allows. `node
@@ -321,15 +347,17 @@ When `gold_traces/` does not yet exist:
    anything. Once written, the `commands` block is the source of truth; never
    re-derive it.
 
-   For a runner the engine does not know, give a full shell template as
-   `commands.record` instead of `framework`. It runs once per test and MUST
-   include the `{test_file}` and `{test_name}` tokens so it records one
-   **specific** test rather than the whole suite.
+   For a runner the engine does not know, give a full shell template with
+   `--record-command` instead of `--framework` (written as `commands.record`).
+   It runs once per test and MUST include the `{test_file}` and `{test_name}`
+   tokens so it records one **specific** test rather than the whole suite.
 
    Either way the command cannot choose where the recording file lands — the
    recorder decides that, under `appmap_dir`. Don't add output-path flags;
    record, then find the file with `discover` (step 3). Paths are derived, not
-   configured (see **Config reference**).
+   configured (see **Config reference**). Later edits to `commands` (adding
+   `record_env`, `batch_size`) are ordinary file edits with your file-editing
+   tool, not shell text commands.
 
 3. **Curate the entries.** Pick one subsystem at a time and find the test that
    shows it working end to end (**Finding the test for a code path**; at
@@ -556,19 +584,42 @@ with no code change, fix the test before blessing it.
 
 ## Engine commands
 
-The engine has five commands — `check` (shape, coverage, and stability), `update`
+The engine has seven commands — `doctor` (setup preflight), `init` (seed the
+directory and manifest), `check` (shape, coverage, and stability), `update`
 (record + digest-gated bless), `discover` (find a new entry's `appmap_path`),
 `covers` (which baseline runs a piece of code), and `plan` (show the record
 commands without running them). Diffing and reviewing a change is the
 **appmap-review** skill's job.
 
 ```
+doctor    [--dir DIR]
+init      [--dir DIR] [--framework NAME] [--runner CMD] [--args FLAGS | --record-command TEMPLATE]
 update    [--dir DIR] [--only TEST] [--record] [--dry-run]
 check     [--dir DIR] [--only TEST] [--record]
 discover  [--dir DIR] --test-file FILE --test-name NAME
 covers    [--dir DIR] --name NAME [--fresh]
 plan      [--dir DIR] [--only TEST]
 ```
+
+`doctor`:
+
+- Answers "is this repository set up?" with one line per check: the manifest,
+  the nearest-ancestor `appmap.yml`, the record commands, the AppMap CLI and
+  its version, and the curated entries with their committed baselines.
+- Exits non-zero when the repository is not set up, naming the skill that
+  fixes it (**appmap-setup**). Run it first in every session; treat a failure
+  as "stop and run setup", never as an invitation to hand-create config.
+- An empty `entries` list exits 0 with a note — that is the Bootstrap state,
+  and it is this skill's job, not setup's.
+
+`init`:
+
+- Creates the gold-traces directory (`baseline/appmaps/` included) and writes
+  `manifest.yaml` itself, so bootstrap needs no `cp`, no heredocs, and no text
+  editing. `--framework` (with optional `--runner`, `--args`) or
+  `--record-command` fills the `commands` block; with no flags it writes
+  commented guidance to fill in later.
+- Refuses to overwrite an existing manifest.
 
 Recording, in every command that records, follows `commands.framework`: the
 selected entries are grouped into as few runner invocations as the framework's

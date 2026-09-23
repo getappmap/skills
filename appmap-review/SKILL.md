@@ -45,6 +45,25 @@ tree**, for a review before anything is committed: the recordings the gold-trace
 engine just made, or baselines blessed but not yet committed. See **Head from the
 working tree** below; the baseline always comes from git.
 
+## First, verify the repository is set up
+
+The gold-traces path only works in a repository that the **appmap-setup** skill
+has set up and **appmap-gold-traces** has populated. Verify before comparing
+anything:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manage.mjs" doctor --dir gold_traces
+```
+
+A non-zero exit means the repository is not set up: stop and run the
+**appmap-setup** skill (`/appmap-setup`) first, then **appmap-gold-traces** to
+curate a baseline — do not hand-create config or improvise recordings to force
+a review through. If `doctor` passes but reports zero curated entries, the
+baseline does not exist yet: that is **appmap-gold-traces**' Bootstrap, not a
+review. The one mode exempt from this check is the ad-hoc compare of two
+recording files (`--base-appmap`/`--head-appmap`), which reads no manifest and
+no gold traces.
+
 ## How it works
 
 The pipeline turns two revisions into one interpreted review:

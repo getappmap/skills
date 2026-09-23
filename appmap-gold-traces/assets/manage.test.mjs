@@ -684,3 +684,97 @@ test('manifest: a schema version 1 manifest still checks', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Checked 1 baseline trace/);
 });
+
+// --- init and doctor (setup preflight) ------------------------------------
+
+function makeBareDir(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-traces-init-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+test('init: seeds the directory and writes the commands from flags', (t) => {
+  const dir = makeBareDir(t);
+  const result = runEngine(dir, 'init', '--framework', 'maven', '--runner', './mvnw -Pintegration test');
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(path.join(dir, 'gold_traces/baseline/appmaps')));
+  const manifest = parseYaml(fs.readFileSync(path.join(dir, 'gold_traces/manifest.yaml'), 'utf8'));
+  assert.equal(manifest.schema_version, 2);
+  assert.equal(manifest.commands.framework, 'maven');
+  assert.equal(manifest.commands.runner, './mvnw -Pintegration test');
+  assert.equal(manifest.entries ?? null, null);
+});
+
+test('init: refuses to overwrite an existing manifest', (t) => {
+  const dir = makeBareDir(t);
+  assert.equal(runEngine(dir, 'init', '--framework', 'pytest').status, 0);
+  const again = runEngine(dir, 'init', '--framework', 'rspec');
+  assert.equal(again.status, 1);
+  assert.match(again.stderr, /refuses to overwrite/);
+});
+
+test('init: rejects an unknown framework and conflicting flags', (t) => {
+  const dir = makeBareDir(t);
+  const unknown = runEngine(dir, 'init', '--framework', 'cargo-test');
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.stderr, /Unknown framework 'cargo-test'/);
+  const both = runEngine(dir, 'init', '--framework', 'pytest', '--record-command', 'run {test_file} {test_name}');
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /not both/);
+});
+
+test('init: with no flags leaves commands as commented guidance', (t) => {
+  const dir = makeBareDir(t);
+  const result = runEngine(dir, 'init');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /not configured yet/i);
+  const manifest = parseYaml(fs.readFileSync(path.join(dir, 'gold_traces/manifest.yaml'), 'utf8'));
+  assert.equal(manifest.commands ?? null, null);
+});
+
+test('doctor: no manifest fails and routes to appmap-setup', (t) => {
+  const dir = makeBareDir(t);
+  const result = runEngine(dir, 'doctor');
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /MISSING\s+manifest/);
+  assert.match(result.stdout, /appmap-setup/);
+  assert.match(result.stdout, /Stop here/);
+});
+
+test('doctor: unconfigured commands block fails and routes to appmap-setup', (t) => {
+  const dir = makeBareDir(t);
+  fs.writeFileSync(path.join(dir, 'appmap.yml'), 'name: fx\nappmap_dir: tmp/appmap\n');
+  assert.equal(runEngine(dir, 'init').status, 0);
+  const result = runEngine(dir, 'doctor');
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /MISSING\s+record commands/);
+  assert.match(result.stdout, /appmap-setup/);
+});
+
+test('doctor: passes on a configured project, noting the empty entries list', (t) => {
+  const dir = makeBareDir(t);
+  fs.writeFileSync(path.join(dir, 'appmap.yml'), 'name: fx\nappmap_dir: tmp/appmap\n');
+  fs.writeFileSync(path.join(dir, 'version-cli.mjs'), `console.log('3.204.1');\n`);
+  assert.equal(runEngine(dir, 'init', '--framework', 'pytest').status, 0);
+  const manifestPath = path.join(dir, 'gold_traces/manifest.yaml');
+  fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, 'utf8')
+    .replace('  framework: pytest', '  framework: pytest\n  appmap_cli: node version-cli.mjs'));
+  const result = runEngine(dir, 'doctor');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /ok\s+appmap CLI\s+node version-cli\.mjs \(3\.204\.1\)/);
+  assert.match(result.stdout, /no gold traces are curated yet/);
+});
+
+test('doctor: an old AppMap CLI fails the version gate', (t) => {
+  const dir = makeBareDir(t);
+  fs.writeFileSync(path.join(dir, 'appmap.yml'), 'name: fx\nappmap_dir: tmp/appmap\n');
+  fs.writeFileSync(path.join(dir, 'version-cli.mjs'), `console.log('3.100.0');\n`);
+  assert.equal(runEngine(dir, 'init', '--framework', 'pytest').status, 0);
+  const manifestPath = path.join(dir, 'gold_traces/manifest.yaml');
+  fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, 'utf8')
+    .replace('  framework: pytest', '  framework: pytest\n  appmap_cli: node version-cli.mjs'));
+  const result = runEngine(dir, 'doctor');
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /MISSING\s+appmap CLI/);
+  assert.match(result.stdout, /3\.201\.0 or later/);
+});

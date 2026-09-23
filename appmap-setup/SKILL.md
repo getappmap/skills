@@ -23,6 +23,14 @@ skills: **appmap-record** (how to record, per language and build tool) and
 **appmap-config** (`appmap.yml` and label syntax). It works on whatever commit is
 checked out; it does not choose branches or revisions.
 
+**This skill is the entry point.** Every other AppMap skill depends on the state
+it leaves behind and refuses to run without it: the gold-traces engine's
+`doctor` command checks for that state and, when it is missing, says to run
+this skill. So when any AppMap skill or tool fails on a repository that has
+never recorded — a missing manifest, no `appmap.yml`, an MCP query error such
+as "query DB not found … Run `appmap index` first" — the recovery is the same:
+run this skill to completion, then retry what failed.
+
 The setup leaves no separate document behind. Everything a later session needs
 is in two files the tools read anyway: `appmap.yml` says what is recorded and
 where recordings land, with a comment per exclusion saying why; and
@@ -30,10 +38,16 @@ where recordings land, with a comment per exclusion saying why; and
 gold-traces engine executes. A hand-kept doc would be a third copy of the same
 facts, and the copy nothing runs is the one that drifts.
 
-Before starting, look for `appmap.yml` and `gold_traces/manifest.yaml`. If both
-exist, the repo has been set up before: run
-`node "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manage.mjs" plan --dir gold_traces`
-to see the record commands, and skip to whichever phase is still missing.
+Before starting, check the current state:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manage.mjs" doctor --dir gold_traces
+```
+
+`doctor` reports what exists and what is missing (manifest, `appmap.yml`,
+record commands, AppMap CLI). If it passes, the repo has been set up before:
+run `plan --dir gold_traces` to see the record commands, and skip to whichever
+phase is still missing. Otherwise its first failing check says where to start.
 
 ## Phase 0 — Tools and environment (do these in parallel, fail fast)
 
@@ -99,44 +113,49 @@ re-record. Confirm the tests still pass and the recordings are well under
 
 ## Phase 5 — Write the record commands into the manifest (commit "commands")
 
-Seed `gold_traces/manifest.yaml` from the gold-traces template and fill in only
-its `commands` block; delete the template's example entry and leave the bare
-`entries:` key with nothing under it (the engine's minimal YAML parser does not
-read `[]`). Curating entries is the **appmap-gold-traces** skill's job, and it
-starts from this file.
+Seed `gold_traces/manifest.yaml` with the gold-traces engine's `init` command —
+it creates the directory and writes the manifest itself, so this phase needs no
+shell copying and no text-editing tools (which are not available everywhere
+this skill runs). Curating entries is the **appmap-gold-traces** skill's job,
+and it starts from this file.
+
+Pass `init` what Phases 1 to 3 found, the way the engine wants it:
 
 ```sh
-mkdir -p gold_traces/baseline/appmaps
-cp "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manifest.template.yaml" gold_traces/manifest.yaml
+node "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manage.mjs" init --dir gold_traces \
+  --framework <name> [--runner "<launcher>"] [--args "<flags>"]
 ```
+
+- `--framework`: the test framework name (`pytest`, `rspec`, `jest`, `maven`, ...).
+- `--runner`: the launcher that runs it in this repo (virtualenv path, wrapper
+  script, profile, workspace flag), only if the engine's detected default is
+  not right. `plan` shows what the engine would pick without it.
+- `--args`: flags that go after the test selectors.
+- For a runner the engine does not know, a full `--record-command` template
+  with the `{test_file}` and `{test_name}` placeholders instead of
+  `--framework`.
+- `record_env` (environment variables the command needs) has no flag: add it to
+  the written manifest's `commands` block with your file-editing tool.
 
 Put `gold_traces/` in the directory the record command runs from: the package
 root in a single-package repo, the package directory in a monorepo (one
 manifest per recorded package). The engine derives every path from that
 placement; see the gold-traces skill, "Layout".
 
-In `commands`, write what Phases 1 to 3 found, the way the engine wants it:
-
-- `framework`: the test framework name (`pytest`, `rspec`, `jest`, `maven`, ...).
-- `runner`: the launcher that runs it in this repo (virtualenv path, wrapper
-  script, profile, workspace flag), only if the engine's detected default is
-  not right. `plan` shows what the engine would pick without it.
-- `args`: flags that go after the test selectors.
-- `record_env`: any environment variables the command needs.
-- For a runner the engine does not know, a full `record` template with the
-  `{test_file}` and `{test_name}` placeholders instead of `framework`.
-
 Then confirm and smoke-test:
 
 ```sh
 node "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manage.mjs" plan --dir gold_traces
+node "${CLAUDE_SKILL_DIR}/../appmap-gold-traces/assets/manage.mjs" doctor --dir gold_traces
 ```
 
 `plan` prints the exact record command. Run it once by hand with a real test
-substituted, and confirm a recording appears under `appmap_dir`. If the repo has
-a `CLAUDE.md`, add one line pointing at the manifest and the gold-traces skill,
-so a session that has not loaded the skill still knows where recording is
-configured. Commit the manifest and that line together.
+substituted, and confirm a recording appears under `appmap_dir`. `doctor` must
+pass — it is the same preflight every other AppMap skill runs before touching
+this repository, so a green `doctor` here is the definition of "set up". If the
+repo has a `CLAUDE.md`, add one line pointing at the manifest and the
+gold-traces skill, so a session that has not loaded the skill still knows where
+recording is configured. Commit the manifest and that line together.
 
 ## What this skill leaves behind
 

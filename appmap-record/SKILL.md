@@ -66,6 +66,12 @@ the MCP or CLI verbs, index into a queryable database first:
 
 This populates `~/.appmap/data/<sha>/query.db`.
 
+A query error such as "query DB not found … Run `appmap index` first" — for
+example from an MCP server started with `appmap query mcp --appmap-dir …` —
+means that database does not exist yet. Indexing an empty or missing directory
+does not fix it: there must be recordings first. On a repository that has
+never recorded, run the **appmap-setup** skill, record, then index.
+
 ## Language reference
 
 Read the one file for the project's language. Each covers the agent install,

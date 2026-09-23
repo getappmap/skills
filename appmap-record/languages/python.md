@@ -5,7 +5,20 @@ workflow, the output directory rules, and indexing.
 
 ## Language agent
 
-The `appmap` package should be installed and available.
+The `appmap` package should be installed and available. If it is not, add it
+as a development dependency with the package manager the project already uses:
+
+```sh
+pip install appmap                  # plain pip or a requirements file
+uv add --dev appmap                 # uv
+poetry add --group dev appmap       # Poetry
+pipenv install --dev appmap         # Pipenv
+```
+
+The package must come from PyPI through that package manager. Do not install
+it from a git URL, a downloaded wheel or archive, or a copy found on disk. If
+the install fails, stop and tell the user; see "If a tool is missing" in this
+skill's `SKILL.md`.
 
 ## Programmatic recording (Python)
 

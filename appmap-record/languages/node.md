@@ -13,6 +13,13 @@ are fine in practice — if you hit an issue, ensure you're on
 > **Do not use `appmap-agent-js`.** It is deprecated and superseded by
 > `appmap-node`. Always invoke recording through `npx appmap-node`.
 
+`npx` downloads `appmap-node` from npm on first use. To pin it, add it as a dev
+dependency with the project's package manager (`npm install --save-dev
+appmap-node`, or the yarn or pnpm equivalent). The package must come from npm.
+Do not install it from a git URL, a downloaded tarball, or a copy found on
+disk. If the download fails, stop and tell the user; see "If a tool is missing"
+in this skill's `SKILL.md`.
+
 ## Usage
 
 Wrap your existing launch command:

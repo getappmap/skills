@@ -5,7 +5,17 @@ workflow, the output directory rules, and indexing.
 
 ## Language agent
 
-The `appmap` gem should be present in the `test` and `development` bundles.
+The `appmap` gem should be present in the `test` and `development` bundles. If
+it is not, add it as the first gem in the `Gemfile` and run `bundle install`:
+
+```ruby
+gem 'appmap', groups: %i[development test]
+```
+
+The gem must come from RubyGems through Bundler. Do not install it from a git
+URL, a downloaded `.gem` file, or a copy found on disk. If `bundle install`
+cannot fetch it, stop and tell the user; see "If a tool is missing" in this
+skill's `SKILL.md`.
 
 ## Programmatic recording (Ruby)
 

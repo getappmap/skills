@@ -129,9 +129,29 @@ function wrapperLauncher(cwd, platform, name, rest) {
 
 // A `#` starts a comment only at the start of a word, so `-Dtest=Foo#bar` is safe bare.
 const SAFE_ARG = /^[\w./:@=+,%-][\w./:@=+,%#-]*$/;
+// cmd.exe expands %name%, so a bare `%` is not safe there.
+const WIN_SAFE_ARG = /^[\w./:@=+,-][\w./:@=+,#-]*$/;
+const WIN_META = /([()\][%!^"<>&|])/g;
 
-/** Quote one argument for `sh`. Plain path-like tokens pass through untouched. */
-export function shellQuote(arg) {
+/**
+ * Quote one argument for the shell the record command runs through: `sh`, or
+ * `cmd.exe` on Windows. Plain path-like tokens pass through untouched.
+ *
+ * cmd.exe has no single quotes. It is given the whole command line as one string,
+ * and the program then splits that line itself (C runtime rules: double quotes
+ * group, `\"` is a literal quote). So an argument is wrapped in double quotes
+ * for the program, and every character cmd.exe itself acts on — the quotes
+ * included — is escaped with `^`, so that cmd.exe never enters quote mode and
+ * hands the string over untouched. This is the scheme cross-spawn uses.
+ * @param {string} arg
+ * @param {string} [platform]
+ */
+export function shellQuote(arg, platform = process.platform) {
+  if (platform === 'win32') {
+    if (WIN_SAFE_ARG.test(arg)) return arg;
+    const quoted = `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1')}"`;
+    return quoted.replace(WIN_META, '^$1');
+  }
   return SAFE_ARG.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -373,7 +393,8 @@ export function resolveRunner(commands, cwd = process.cwd(), platform = process.
  * @param {string} [platform]
  */
 export function buildCommand(commands, group, cwd = process.cwd(), platform = process.platform) {
-  return [resolveRunner(commands, cwd, platform), ...group.args.map(shellQuote), commands.args ?? ''].filter(Boolean).join(' ');
+  const args = group.args.map((arg) => shellQuote(arg, platform));
+  return [resolveRunner(commands, cwd, platform), ...args, commands.args ?? ''].filter(Boolean).join(' ');
 }
 
 // How long one record command may be, measured on this machine.

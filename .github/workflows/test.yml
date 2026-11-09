@@ -20,4 +20,4 @@ jobs:
       # bash on every runner, so the globs expand the same way on Windows.
       - name: Run the helper tests
         shell: bash
-        run: node --test appmap-gold-traces/assets/*.test.mjs appmap-review/assets/*.test.mjs
+        run: node --test appmap-gold-traces/assets/*.test.mjs appmap-review/assets/*.test.mjs appmap-analyze/assets/*.test.mjs

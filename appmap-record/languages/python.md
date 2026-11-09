@@ -71,6 +71,23 @@ any engine runs a query covers every engine created afterward. Confirm it
 worked: the recording's `metadata.frameworks` lists `SQLAlchemy` and
 `find_queries` is non-empty.
 
+## Capture outgoing HTTP
+
+Outgoing HTTP requests (`http.client`, and so `requests` and `urllib3`) are
+recorded only when `appmap.http` is imported. Frameworks with server-side
+hooks do not import it for you. Import it the same way as the SQLAlchemy
+listener:
+
+```python
+# conftest.py
+import os
+if os.environ.get("APPMAP") == "true":
+    import appmap.http  # records http_client_request events
+```
+
+The request headers are not recorded in full; do not expect to see auth
+headers in the recording.
+
 ## Record a process
 
 ```sh
@@ -90,6 +107,21 @@ Flask `--debug`). Force with `APPMAP_RECORD_REMOTE=true`.
 | `APPMAP_DISPLAY_PARAMS=true` | Capture params/returns for unlabeled functions (labeled functions always capture) |
 | `APPMAP_CONFIG=path/to/appmap.yml` | Custom config file path |
 | `APPMAP_LOG_LEVEL=DEBUG` | Verbose logging for instrumentation troubleshooting |
+
+## Values in recordings
+
+`APPMAP_DISPLAY_PARAMS=true` stores each argument, receiver, and return value
+as its `repr()`. Two consequences:
+
+- **`repr()` runs during recording.** If a class's `__repr__` reads a file,
+  queries a device, or fills a cache, recording does that too: extra I/O in the
+  recording, changed cache state, and sometimes a different test outcome or much
+  longer timings. Confirm such effects with a run without the agent.
+- **Positional optional arguments are recorded as their defaults** (agent
+  3.0.1): for `def f(self, a, b=None)`, a call `f(1, 2)` is recorded as
+  `b=None`. Keyword arguments are recorded correctly. The cause is the `"opt"`
+  branch of `set_params` in `_appmap/event.py`, which reads only `kwargs`.
+  Check a recorded default against the call site before using it as evidence.
 
 ## Advanced usage
 

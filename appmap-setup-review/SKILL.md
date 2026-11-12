@@ -1,6 +1,6 @@
 ---
 name: appmap-setup-review
-description: Set up a two-revision AppMap comparison in a repository - pick BASE and HEAD commits one feature apart, run appmap-setup on BASE, seed gold traces there, replay the config onto HEAD via cherry-pick, update the gold traces for the feature, and run an appmap-review between the two. Use when asked to demonstrate or evaluate AppMap gold-trace comparison on an existing change. For plain recording setup, use appmap-setup instead.
+description: Set up a two-revision AppMap comparison in a repository - pick BASE and HEAD commits one feature apart, run appmap-setup on BASE, seed gold traces there, replay the config onto HEAD via cherry-pick, update the gold traces for the feature, and run an appmap-review between the two. Use when asked to demonstrate or evaluate AppMap gold-trace comparison on an existing change. For plain recording setup, use appmap-setup instead; to find a branch's bugs without setting up gold traces, use appmap-analyze.
 ---
 
 # Skill: AppMap Two-Revision Review Setup

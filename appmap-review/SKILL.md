@@ -1,6 +1,6 @@
 ---
 name: appmap-review
-description: Review the runtime-behavior change between two revisions using the committed gold traces, or between two AppMap recordings made by hand (for example one Postman run recorded on each of two branches). Archives and compares each side with the AppMap CLI, then interprets the result into a findings-first report covering unintended side effects, missing security checks, SQL and HTTP risks, and coverage gaps. Use when asked to review a branch, PR, or release for behavioral change, to compare two AppMap recordings, or to decide which changed gold traces to bless. The gold-traces path needs baselines maintained by appmap-gold-traces; the ad-hoc path needs only the two recordings.
+description: Needs gold traces or two existing recordings. Review the runtime-behavior change between two revisions using the committed gold traces, or between two AppMap recordings made by hand (for example one Postman run recorded on each of two branches). Archives and compares each side with the AppMap CLI, then interprets the result into a findings-first report covering unintended side effects, missing security checks, SQL and HTTP risks, and coverage gaps. Use when asked to review a branch, PR, or release for behavioral change, to compare two AppMap recordings, or to decide which changed gold traces to bless. The gold-traces path needs baselines maintained by appmap-gold-traces; the ad-hoc path needs only the two recordings.
 ---
 
 # Skill: AppMap Behavioral Review
@@ -30,6 +30,11 @@ diff review.
 - Review a branch or PR for behavioral change and security risk before merge.
 - Given two revisions (or one baseline and the current HEAD), produce the review.
 - Investigate how a release changed server behavior versus a prior revision.
+
+If there are no gold traces and no recordings to compare, this skill has
+nothing to read. Use **appmap-setup-review** to set up gold traces on the base
+and then review, or **appmap-analyze** to find the branch's bugs directly with
+scenario tests recorded on both revisions.
 
 ## Arguments
 

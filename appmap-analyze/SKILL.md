@@ -50,6 +50,8 @@ Phase 5 checks to the claims you make. Answer in chat, not with a report:
 
 Offer a full analysis if the answer turns up a problem worth one.
 
+## The phases
+
 ```
 Phase 0  tools; the target's tests pass without AppMap    (appmap-setup)
 Phase 1  config, one recording, the noise check           (appmap-config, appmap-record)
@@ -297,10 +299,11 @@ unchanged, with these differences:
   analysis, and that failing new tests are findings.
 - **What the change does** becomes **What the code does** for a whole-project
   analysis.
-- **Evidence** on each finding names the test that recorded it, the query
-  that shows it, so a reader can rerun it, and the **kind** of evidence it is:
-  *count*, *recorded value*, *thread*, *absence*, *timing* (confirmed without
-  the recorder), *base/head difference*, *failing test*, or *source only*.
+- **Evidence** on each finding names the test that recorded it and the query
+  that shows it, so a reader can rerun it, and says what **kind** of evidence
+  it is: *count*, *recorded value*, *thread*, *absence*, *timing* (confirmed
+  without the recorder), *base/head difference*, *failing test*, or *source
+  only*.
 - **Show the evidence, not just a drawing of it** (see below), and link each
   finding to the recording it came from.
 - **What the recordings showed** goes after **Checks performed**, before the
@@ -330,10 +333,10 @@ reader can rerun it and it cannot be drawn wrong:
     ]
   ```
 
-  The `4309x` line is the finding: four thousand reads for one command, and no
-  second write after the device said busy. Copy the lines exactly; mark
-  anything cut with `…`. Use `--params` when a value is the point, `--hide` to
-  drop calls that do not bear on it.
+  The `4309x` line is the finding: for one command, four thousand reads that
+  return nothing, with no wait between them, until the timeout. Copy the lines
+  exactly; mark anything cut with `…`. Use `--params` when a value is the
+  point, `--hide` to drop calls that do not bear on it.
 - **A count table** from `find calls` or `countdiff` when the finding is a
   number across tests or revisions.
 - **A drawn diagram** only for what no single output shows: two threads side

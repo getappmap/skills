@@ -1,9 +1,15 @@
 ---
 name: appmap-analyze
-description: Runtime analysis of a project, branch, or subsystem with AppMap, whether or not it already records - record what the code does, write the scenario tests the suite is missing, query the recordings for bugs and design problems that are hard to prove from source alone (hot loops, ignored timeouts, stale cached state, hidden I/O, regressions in shared code), confirm each one, and write a findings-first report in the appmap-review format; or answer one question about runtime behavior with recorded evidence. Use when asked to analyze, audit, or investigate code with AppMap, to find bugs with it, or to review a branch that has no gold traces to compare against. To compare a change against committed gold traces or two existing recordings, use appmap-review.
+description: (Beta) Runtime analysis of a project, branch, or subsystem with AppMap, whether or not it already records - record what the code does, write the scenario tests the suite is missing, query the recordings for bugs and design problems that are hard to prove from source alone (hot loops, ignored timeouts, stale cached state, hidden I/O, regressions in shared code), confirm each one, and write a findings-first report in the appmap-review format; or answer one question about runtime behavior with recorded evidence. Use when asked to analyze, audit, or investigate code with AppMap, to find bugs with it, or to review a branch that has no gold traces to compare against. To compare a change against committed gold traces or two existing recordings, use appmap-review.
+metadata:
+  status: beta
 ---
 
-# Skill: AppMap Runtime Analysis
+# Skill: AppMap Runtime Analysis (beta)
+
+> **Beta.** The procedure and the report format may change. Say in the
+> report's banner, and in a question-mode answer, that it was produced by a
+> beta skill.
 
 Find bugs and design problems by recording what the code does, and prove each
 one with a recording. The output is a report in the **appmap-review** format:

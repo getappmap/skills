@@ -22,31 +22,90 @@ there is no baseline. Two things follow from that:
   them. That is the appmap-review ad-hoc mode, run on recordings you made.
 
 ```
-Phase 0  tools, config, hooks                    (appmap-setup, appmap-record)
-Phase 1  record the existing suite; measure coverage of the target
-Phase 2  write scenario tests: fake peers, error paths, both-revision tests
-Phase 3  query the recordings                    (appmap query + assets/analyze.mjs)
-Phase 4  confirm every finding without the recorder
-Phase 5  compare base and head for code both revisions run   (appmap-review)
-Phase 6  write the report                        (appmap-review "Report format")
+Phase 0  tools; the target's tests pass without AppMap    (appmap-setup)
+Phase 1  config, one recording, the noise check           (appmap-config, appmap-record)
+Phase 2  record the existing suite; measure coverage of the target
+Phase 3  write scenario tests: fake peers, error paths, both-revision tests
+Phase 4  query the recordings                    (appmap query + assets/analyze.mjs)
+Phase 5  confirm every finding without the recorder
+Phase 6  compare base and head for code both revisions run   (appmap-review)
+Phase 7  write the report                        (appmap-review "Report format")
 ```
 
-## Phase 0 — Tools, config, hooks
+Do not skip Phases 0 and 1 to get to the analysis sooner. Each removes one
+thing that can go wrong, so later problems have one cause instead of two.
 
-Follow **appmap-setup** Phase 0 for the CLI and the language agent, and
-**appmap-config** for `appmap.yml`: record the project's own code in full, and
-the test directory too if the fakes you write in Phase 2 live there (their calls
-are evidence too). Then enable the hooks the target needs. Some are opt-in:
+## Phase 0 — Tools, and a run without AppMap
+
+Follow **appmap-setup** Phase 0 for the CLI and the language agent. If a tool
+cannot be installed, stop as Phase 0 there says.
+
+Then run the target's tests **without the recorder**, the way the project
+runs them (**appmap-setup** Phase 1), before touching `appmap.yml` or
+enabling the agent. Fix the environment until they run: interpreter and JDK
+versions, dependencies, databases, services, environment variables. A test
+that cannot run without AppMap will not run with it either, and debugging
+the environment and the recorder at once doubles the work.
+
+Save the result of this run (the pass/fail list from the runner's report,
+for example `pytest -rA`, JUnit XML, or `--reporter json`). Two later uses:
+
+- A test that already fails here is an **existing failure**, not a finding
+  of the analysis. Note it and move on.
+- Phase 2 compares this list with the recorded run. A test whose outcome
+  differs between the two is affected by the recorder (Phase 5).
+
+## Phase 1 — Config, one recording, the noise check
+
+If the project already has an `appmap.yml`, use it and run the noise check
+below anyway: a config made for gold traces can be too broad or too narrow
+for this analysis. Otherwise follow **appmap-config**: record the project's
+own code in full, and the test directory too if the fakes you write in
+Phase 3 live there (their calls are evidence too). **Do not list frameworks
+or libraries** (`org.springframework`, `django`, `lodash`): HTTP, SQL, and
+exceptions are captured without them, and a whole framework buries the
+project's own calls. `shallow: true` does not fix it (see **appmap-config**,
+"The starting config").
+
+Enable the hooks the target needs. Some are opt-in:
 
 | Language | Hook | How to enable while recording |
 | --- | --- | --- |
 | Python | outgoing HTTP (`http.client`, so `requests`/`urllib3` too) | `import appmap.http` in `conftest.py`, guarded by `os.environ.get("APPMAP") == "true"` |
 | Python | SQL, bare SQLAlchemy | `import appmap.sqlalchemy` (see **appmap-record**) |
 
-Confirm each hook with one recording before relying on its absence: zero
+Record **one** test that runs the target (**appmap-record**) and confirm the
+recording has the target's functions with their parameters. Confirm each
+hook with that recording before relying on its absence: zero
 `http_client_request` events means "no hook" as often as "no HTTP".
 
-## Phase 1 — Record the suite, measure coverage of the target
+Then run the noise check on it:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/assets/analyze.mjs" noise tmp/appmap --own <own package prefixes>
+```
+
+`--own` takes the project's package prefixes, comma-separated, in the form
+the recording names classes (`com.acme.shop`, `myapp`), including the test
+package if it is recorded. The check prints the
+share of calls per package and the functions called most often in one
+recording, and fails (exit 2) when a recording is over 1 MiB (`--max-kb`) or
+under half of the calls are in the project's own code (`--min-own`). Do not
+go on until it passes:
+
+- **A framework or library has most of the calls:** remove its entry from
+  `appmap.yml`, or narrow it to the one package a question needs. Excluding
+  its utilities one by one does not converge.
+- **One of the project's own helpers has thousands of calls** (formatters,
+  geometry, string utilities): exclude it (**appmap-config**, "Cutting
+  noise"), unless it is part of the target. A hot loop in the target is a
+  finding candidate, not noise; keep it, and use `--focus` in `tree` to read
+  around it.
+
+Rerun the check on the suite's recordings after Phase 2; a test that
+exercises more code can still blow the budget.
+
+## Phase 2 — Record the suite, measure coverage of the target
 
 Record the whole suite once, with values (`APPMAP_DISPLAY_PARAMS=true` for
 Python), then index it for `appmap query`:
@@ -54,6 +113,10 @@ Python), then index it for `appmap query`:
 ```sh
 ~/.appmap/bin/appmap index --appmap-dir tmp/appmap
 ```
+
+Compare the pass/fail list with the one from Phase 0. A test that passes
+without the recorder and fails with it (or the other way round) is affected
+by recording; Phase 5 explains the usual causes.
 
 Then ask which of the target's functions ran at all. For a branch, the target
 is what the diff touches:
@@ -67,9 +130,9 @@ language; check a surprising miss by hand) and prints how often the recordings
 called it. For a whole project, use `appmap query hotspots --limit 0` and look
 for the modules that are missing. Every ❌ on a function that talks to the
 outside world (network, device, disk, another thread) needs a scenario test in
-Phase 2.
+Phase 3.
 
-## Phase 2 — Write the scenario tests
+## Phase 3 — Write the scenario tests
 
 Write normal tests the project can keep. Three kinds pay off most:
 
@@ -88,15 +151,15 @@ Write normal tests the project can keep. Three kinds pay off most:
 3. **Both-revision tests** for code the branch changed but that also serves
    existing users (a shared base class, a common send/receive loop, a
    simulator). Write them against the API both revisions have, so the same
-   file runs unchanged on base and head. They feed Phase 5.
+   file runs unchanged on base and head. They feed Phase 6.
 
 Write each test to assert the **correct** behavior. A failing test is a
 finding candidate, and its recording is the evidence. Do not weaken a test to
 make it pass; list it in the report.
 
-## Phase 3 — Query the recordings
+## Phase 4 — Query the recordings
 
-Record the new tests (same command as Phase 1) and re-index. Then run these
+Record the new tests (same command as Phase 2) and re-index. Then run these
 passes. Each names what to look for and the command that shows it.
 
 | Pass | Look for | Command |
@@ -117,7 +180,7 @@ dirs>`, record, move the recordings aside, `git checkout HEAD -- <src dirs>`.
 A second worktree changes test ids that embed paths and anything hashed from
 paths, and every test shows as changed.
 
-## Phase 4 — Confirm every finding without the recorder
+## Phase 5 — Confirm every finding without the recorder
 
 Recording changes what runs. Before a finding goes in the report:
 
@@ -139,9 +202,9 @@ Recording changes what runs. Before a finding goes in the report:
   after other tests ran is depending on shared state, which is often the
   finding.
 
-## Phase 5 — Compare base and head (branches only)
+## Phase 6 — Compare base and head (branches only)
 
-For each both-revision test from Phase 2, record it on base and on head (same
+For each both-revision test from Phase 3, record it on base and on head (same
 checkout path) and compare the pair with **appmap-review**'s ad-hoc mode:
 
 ```sh
@@ -157,7 +220,7 @@ read the commit that introduced it (`git log -S'<changed line>'`): a change
 made for the new feature inside code the old users also run is the
 side-effect pattern appmap-review's recipe calls out.
 
-## Phase 6 — Write the report
+## Phase 7 — Write the report
 
 Use **appmap-review**'s "Report format" and "Rules for the interpretation"
 unchanged, with these differences:
@@ -193,4 +256,4 @@ tests the findings' **Fix** sections name.
 - **Group by cause.** Several symptoms with one design cause (for example a
   request/response transport forced into a stream-polling loop) are one finding
   with parts, plus the architectural fix.
-- **Do not trust the recorder blindly.** Phase 4 is not optional.
+- **Do not trust the recorder blindly.** Phase 5 is not optional.

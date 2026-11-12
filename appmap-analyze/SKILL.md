@@ -1,25 +1,48 @@
 ---
 name: appmap-analyze
-description: Greenfield runtime analysis of a project, branch, or subsystem that has no gold traces - record what the code does with AppMap, write the scenario tests the suite is missing, query the recordings for bugs and design problems that are hard to prove from source alone (hot loops, ignored timeouts, stale cached state, hidden I/O, regressions in shared code), confirm each one, and write a findings-first report in the appmap-review format. Use when asked to analyze, audit, or review an existing codebase or feature branch with AppMap and no committed baseline exists. For reviewing a change against committed gold traces, use appmap-review.
+description: Runtime analysis of a project, branch, or subsystem with AppMap, whether or not it already records - record what the code does, write the scenario tests the suite is missing, query the recordings for bugs and design problems that are hard to prove from source alone (hot loops, ignored timeouts, stale cached state, hidden I/O, regressions in shared code), confirm each one, and write a findings-first report in the appmap-review format; or answer one question about runtime behavior with recorded evidence. Use when asked to analyze, audit, or investigate code with AppMap, to find bugs with it, or to review a branch that has no gold traces to compare against. To compare a change against committed gold traces or two existing recordings, use appmap-review.
 ---
 
-# Skill: AppMap Greenfield Analysis
+# Skill: AppMap Runtime Analysis
 
-Find bugs and design problems in code that has never been recorded, and prove
-each one with a recording. The output is a report in the **appmap-review**
-format: findings first, each with the recorded evidence that backs it.
+Find bugs and design problems by recording what the code does, and prove each
+one with a recording. The output is a report in the **appmap-review** format:
+findings first, each with the recorded evidence that backs it.
 
-**appmap-review** answers "what did this change alter, compared with the
-blessed baseline?". This skill answers "what is wrong with this code?" when
-there is no baseline. Two things follow from that:
+**appmap-review** answers "what did this change alter, compared with a
+baseline?". This skill answers "what is wrong with this code?", with or without
+one. Two things follow from that:
 
 - **The suite usually does not run the code that matters.** New or poorly
-  tested code is exactly what a greenfield analysis is asked about, and the
-  existing tests rarely reach its error paths. Most findings come from
-  scenario tests written during the analysis, not from recording the suite.
+  tested code is exactly what an analysis is asked about, and the existing
+  tests rarely reach its error paths. Most findings come from scenario tests
+  written during the analysis, not from recording the suite.
 - **You can make a baseline when you need one.** For a branch, record the same
   tests on the merge-base and on the head, from the same checkout, and compare
   them. That is the appmap-review ad-hoc mode, run on recordings you made.
+
+## Where to start
+
+| The project has | Start with |
+| --- | --- |
+| No AppMap setup | Phase 0 and every phase after it. |
+| An `appmap.yml` | Phase 0's run without the recorder, then Phase 1 with the existing config. The noise check still applies. |
+| Gold traces (`gold_traces/`) | As above, and add the committed recordings to Phase 2: they are a curated set of the suite's important paths. For a branch, also run **appmap-review** on them; its findings join this report. |
+| A specific question ("why is checkout slow", "does `repr` hit the network", "who calls `X`") | **Question mode**, below. |
+
+### Question mode
+
+For one question, not an audit: run Phases 0-2 only as far as needed to record
+a test that drives the code in question, write one scenario test in Phase 3 if
+none does, run the Phase 4 passes that bear on the question, and apply the
+Phase 5 checks to the claims you make. Answer in chat, not with a report:
+
+1. The answer, in one to three sentences.
+2. The evidence: the trimmed `tree` excerpt or counts that show it (Phase 7,
+   "Evidence"), and the recording it came from.
+3. The commands that reproduce it.
+
+Offer a full analysis if the answer turns up a problem worth one.
 
 ```
 Phase 0  tools; the target's tests pass without AppMap    (appmap-setup)
@@ -258,16 +281,17 @@ Use **appmap-review**'s "Report format" and "Rules for the interpretation"
 unchanged, with these differences:
 
 - **Header.** `**Revisions:**` names the head and the base you recorded, or
-  `**Scope:**` for a whole-project analysis. `**Method:**` says "greenfield
-  runtime analysis" and names what was recorded.
-- **Banner.** Say that there were no gold traces, which tests were written for
-  the analysis, and that failing new tests are findings.
+  `**Scope:**` for a whole-project analysis. `**Method:**` says "runtime
+  analysis" and names what was recorded.
+- **Banner.** Say what baseline there was (none, gold traces, or base-revision
+  recordings made for the analysis), which tests were written for the
+  analysis, and that failing new tests are findings.
 - **What the change does** becomes **What the code does** for a whole-project
   analysis.
 - **Evidence** on each finding names the test that recorded it and the query
   that shows it, so a reader can rerun it.
 - **Existing problems.** Mark findings that are already on the base
-  ("existing, `develop`"). A greenfield analysis finds them as a matter of
+  ("existing, `develop`"). An analysis finds them as a matter of
   course, and the reader needs to know they are not the branch's.
 - **About the tooling** (optional, after the details fold): recorder side
   effects, agent bugs, and hooks you had to enable. Write it once; reference it

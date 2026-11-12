@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Helpers for a greenfield AppMap analysis: reading recordings the way a
+// Helpers for an AppMap runtime analysis: reading recordings the way a
 // reviewer needs when there is no committed baseline to diff against.
 //
 //   node analyze.mjs tree FILE [--depth N] [--params] [--hide a,b] [--focus text]

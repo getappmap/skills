@@ -175,10 +175,8 @@ passes. Each names what to look for and the command that shows it.
 
 `countdiff` works per function. Use it instead of the whole-suite structural
 compare when the compare's text names every actor by package (`endaq#send`).
-Record both sides from the **same checkout path**: `git checkout <base> -- <src
-dirs>`, record, move the recordings aside, `git checkout HEAD -- <src dirs>`.
-A second worktree changes test ids that embed paths and anything hashed from
-paths, and every test shows as changed.
+Record both sides in the same checkout, as **Recording the base revision**
+(Phase 6) describes.
 
 ## Phase 5 — Confirm every finding without the recorder
 
@@ -204,8 +202,8 @@ Recording changes what runs. Before a finding goes in the report:
 
 ## Phase 6 — Compare base and head (branches only)
 
-For each both-revision test from Phase 3, record it on base and on head (same
-checkout path) and compare the pair with **appmap-review**'s ad-hoc mode:
+For each both-revision test from Phase 3, record it on base and on head (as
+below) and compare the pair with **appmap-review**'s ad-hoc mode:
 
 ```sh
 node "${CLAUDE_SKILL_DIR}/../appmap-review/assets/review.mjs" compare \
@@ -219,6 +217,40 @@ on base, fails on head, and has such a line is a regression with proof. Then
 read the commit that introduced it (`git log -S'<changed line>'`): a change
 made for the new feature inside code the old users also run is the
 side-effect pattern appmap-review's recipe calls out.
+
+### Recording the base revision
+
+Record both revisions **in the same checkout**, swapping only the source
+directories. A second clone or a worktree changes test ids that embed paths and
+anything hashed from paths, so every test shows as changed; some agent
+environments also cannot create worktrees at all.
+
+```sh
+git status --porcelain -- <src dirs>        # must print nothing; commit or stash first
+# 1. record head as usual, then move its recordings aside
+mkdir -p tmp/analysis
+mv tmp/appmap tmp/analysis/head
+# 2. swap the source directories to base; the new tests stay as they are
+git restore --source=<base> --staged --worktree -- <src dirs>
+#    rebuild or reinstall if the project compiles or the lockfile is in <src dirs>
+# 3. record the same tests, move them aside
+mv tmp/appmap tmp/analysis/base
+# 4. swap back and confirm the tree is as it was
+git restore --source=HEAD --staged --worktree -- <src dirs>
+git status --porcelain -- <src dirs>        # must print nothing again
+```
+
+- **Use `git restore --source`, not `git checkout <base> -- <dirs>`.** Checkout
+  with a path writes the base's files but leaves files that exist only on head,
+  so the "base" run still imports head's new modules. Restore removes them.
+- **The clean-tree check is what makes step 4 safe.** Restore overwrites
+  uncommitted changes in those directories without asking.
+- **Keep the new tests outside `<src dirs>`**, or they are swapped too. If
+  the project keeps tests next to the source, list the source files instead
+  of directories.
+- **If the dependencies differ** between the revisions (a changed lockfile or
+  build file), include that file and reinstall on each side, or say in the
+  report that both sides ran on head's dependencies.
 
 ## Phase 7 — Write the report
 

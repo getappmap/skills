@@ -5,6 +5,7 @@
 //   node analyze.mjs tree FILE [--depth N] [--params] [--hide a,b] [--focus text]
 //   node analyze.mjs countdiff BASE_DIR HEAD_DIR [--limit N]
 //   node analyze.mjs coverage --base REV [--head REV] [--appmap-dir DIR] [--path PREFIX]
+//   node analyze.mjs noise [DIR|FILE...] [--own a,b] [--max-kb N] [--max-calls N] [--min-own PCT]
 //
 // tree       One recording as a compact call tree, one line per call, with
 //            repeated siblings collapsed ("4309x [ ... ]"). A run of the same
@@ -17,6 +18,11 @@
 // coverage   Which functions a source diff touches, and how many times the
 //            recordings under --appmap-dir called each one. A function the diff
 //            changed that no recording runs is a gap to close with a test.
+// noise      The noise check to run before any analysis: size per recording,
+//            the share of calls per package, and the functions called most
+//            often in one recording. Exits 2 when a recording is over the size
+//            budget or, with --own, when too few calls are in the project's own
+//            code. Defaults to the appmap_dir from appmap.yml.
 //
 // Zero-install: Node 18+ and git only.
 
@@ -297,6 +303,96 @@ export function recordedCalls(appmapDir) {
 }
 
 // ---------------------------------------------------------------------------
+// noise
+// ---------------------------------------------------------------------------
+
+// The package a function belongs to, cut to `depth` segments of its class
+// name: `org.springframework.util.StringUtils` -> `org.springframework`.
+// Ruby (`Foo::Bar`) and path-like Node names split the same way.
+export function packageOf(definedClass, depth = 2) {
+  const parts = String(definedClass ?? '?').split(/::|[./]/).filter(Boolean);
+  return parts.slice(0, Math.max(1, Math.min(depth, parts.length - 1))).join('.') || '?';
+}
+
+function ownsClass(definedClass, own) {
+  const name = String(definedClass ?? '').replaceAll('::', '.').replaceAll('/', '.');
+  return own.some((prefix) => name === prefix || name.startsWith(`${prefix}.`));
+}
+
+// One recording's noise profile: size, call count, calls per package and per
+// function, and how many calls fall in the `own` package prefixes.
+export function noiseProfile(appmap, { bytes = 0, depth = 2, own = [] } = {}) {
+  const packages = new Map();
+  const functions = new Map();
+  let calls = 0;
+  let ownCalls = 0;
+  for (const event of appmap.events ?? []) {
+    if (event.event !== 'call' || event.method_id === undefined) continue;
+    calls += 1;
+    const pkg = packageOf(event.defined_class, depth);
+    packages.set(pkg, (packages.get(pkg) ?? 0) + 1);
+    const fn = functionId(event);
+    functions.set(fn, (functions.get(fn) ?? 0) + 1);
+    if (own.length && ownsClass(event.defined_class, own)) ownCalls += 1;
+  }
+  return { bytes, calls, ownCalls, packages, functions };
+}
+
+function recordingFiles(targets) {
+  const files = [];
+  for (const target of targets) {
+    if (fs.statSync(target).isDirectory()) files.push(...listAppmaps(target).map((f) => path.join(target, f)));
+    else files.push(target);
+  }
+  return files;
+}
+
+export function noiseReport(files, { depth = 2, own = [], maxKb = 1024, maxCalls = 1000, minOwn = 50 } = {}) {
+  const packages = new Map();
+  const hot = new Map();
+  const oversize = [];
+  let calls = 0;
+  let ownCalls = 0;
+  let bytes = 0;
+  for (const file of files) {
+    const size = fs.statSync(file).size;
+    const profile = noiseProfile(readAppmap(file), { bytes: size, depth, own });
+    bytes += size;
+    calls += profile.calls;
+    ownCalls += profile.ownCalls;
+    if (size > maxKb * 1024) oversize.push({ file, bytes: size, calls: profile.calls });
+    for (const [pkg, n] of profile.packages) packages.set(pkg, (packages.get(pkg) ?? 0) + n);
+    for (const [fn, n] of profile.functions) {
+      if (n < maxCalls) continue;
+      const entry = hot.get(fn) ?? { fn, max: 0, file: null, recordings: 0 };
+      entry.recordings += 1;
+      if (n > entry.max) Object.assign(entry, { max: n, file });
+      hot.set(fn, entry);
+    }
+  }
+  const ownShare = own.length && calls ? (100 * ownCalls) / calls : null;
+  const failures = [];
+  if (oversize.length) failures.push(`${oversize.length} of ${files.length} recording(s) over ${maxKb} KiB`);
+  if (ownShare !== null && ownShare < minOwn) {
+    failures.push(`only ${ownShare.toFixed(0)}% of calls are in ${own.join(', ')} (minimum ${minOwn}%)`);
+  }
+  return {
+    files: files.length,
+    bytes,
+    calls,
+    ownShare,
+    packages: [...packages.entries()].map(([pkg, n]) => ({ pkg, calls: n })).sort((a, b) => b.calls - a.calls),
+    hot: [...hot.values()].sort((a, b) => b.max - a.max),
+    oversize: oversize.sort((a, b) => b.bytes - a.bytes),
+    failures,
+  };
+}
+
+function kib(bytes) {
+  return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(0)} KiB` : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -321,7 +417,8 @@ function appmapDirFromConfig() {
   }
 }
 
-const VALUED = new Set(['--depth', '--hide', '--focus', '--limit', '--base', '--head', '--appmap-dir', '--path']);
+const VALUED = new Set(['--depth', '--hide', '--focus', '--limit', '--base', '--head', '--appmap-dir', '--path',
+  '--own', '--max-kb', '--max-calls', '--min-own', '--top']);
 
 function positional(args) {
   return args.filter((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1]));
@@ -376,8 +473,42 @@ function main(argv) {
       console.log(`${n ? '✅' : '❌'} ${String(n || '').padStart(6)}  ${f.file}:${f.line} ${f.name}`);
     }
     console.log(`\n${hit} of ${functions.length} changed functions ran in the recordings under ${appmapDir}.`);
+  } else if (command === 'noise') {
+    const targets = positional(args);
+    const files = recordingFiles(targets.length ? targets : [appmapDirFromConfig()]);
+    if (!files.length) throw new Error('noise found no .appmap.json files');
+    const top = Number(option(args, '--top', 10));
+    const own = String(option(args, '--own', '')).split(',').map((s) => s.trim()).filter(Boolean);
+    const report = noiseReport(files, {
+      depth: Number(option(args, '--depth', 2)),
+      own,
+      maxKb: Number(option(args, '--max-kb', 1024)),
+      maxCalls: Number(option(args, '--max-calls', 1000)),
+      minOwn: Number(option(args, '--min-own', 50)),
+    });
+    console.log(`${report.files} recording(s), ${kib(report.bytes)}, ${report.calls} function calls.`);
+    if (report.ownShare !== null) console.log(`Own code (${own.join(', ')}): ${report.ownShare.toFixed(0)}% of calls.`);
+    console.log('\nCalls by package:');
+    for (const p of report.packages.slice(0, top)) {
+      console.log(`  ${`${((100 * p.calls) / report.calls).toFixed(0)}%`.padStart(4)}  ${String(p.calls).padStart(9)}  ${p.pkg}`);
+    }
+    if (report.oversize.length) {
+      console.log('\nLargest recordings over the budget:');
+      for (const o of report.oversize.slice(0, top)) console.log(`  ${kib(o.bytes).padStart(9)}  ${o.file}`);
+    }
+    if (report.hot.length) {
+      console.log('\nCalled most often in one recording (exclude a utility; keep a function the analysis is about):');
+      for (const h of report.hot.slice(0, top)) {
+        console.log(`  ${String(h.max).padStart(9)}x  ${h.fn}  (${h.recordings} recording(s); most in ${h.file})`);
+      }
+    }
+    if (report.failures.length) {
+      console.log(`\nFAIL: ${report.failures.join('; ')}.`);
+      process.exit(2);
+    }
+    console.log('\nPASS');
   } else {
-    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 22).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 27).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(command ? 1 : 0);
   }
 }

@@ -8,7 +8,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { buildForest, renderTree, countDiff, changedFunctions, definitionAbove } from './analyze.mjs';
+import {
+  buildForest, renderTree, countDiff, changedFunctions, definitionAbove, packageOf, noiseReport,
+} from './analyze.mjs';
 
 // A recording built from a list of nested calls: [name, children, extra].
 function recording(calls) {
@@ -78,4 +80,36 @@ test('changedFunctions maps diff hunks to the enclosing function, per language',
   const found = changedFunctions(diff, (f) => sources[f] ?? 'text\n');
   assert.deepEqual(found.map((f) => `${f.file}:${f.line} ${f.name}`), ['pkg/c.py:5 b', 'web/x.js:1 go', 'web/x.js:5 run']);
   assert.equal(definitionAbove(['raise ValueError(x)'], 0, 'a.py'), null);
+});
+
+test('packageOf cuts a class name to its package, across naming styles', () => {
+  assert.equal(packageOf('org.springframework.util.StringUtils'), 'org.springframework');
+  assert.equal(packageOf('myapp.core.models.User'), 'myapp.core');
+  assert.equal(packageOf('pkg.C'), 'pkg');
+  assert.equal(packageOf('Foo::Bar::Baz'), 'Foo.Bar');
+  assert.equal(packageOf('Lonely'), 'Lonely');
+});
+
+test('noise fails on an oversized recording and on too little own code, and lists hot functions', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noise-'));
+  const util = [];
+  for (let i = 0; i < 30; i += 1) util.push(['hasText', [], { call: { defined_class: 'org.springframework.util.StringUtils' } }]);
+  const write = (name, calls) => {
+    const file = path.join(dir, `${name}.appmap.json`);
+    fs.writeFileSync(file, JSON.stringify(recording(calls)));
+    return file;
+  };
+  const noisy = write('noisy', [['handle', util, { call: { defined_class: 'com.acme.Web' } }]]);
+  const clean = write('clean', [['handle', [['save', [], { call: { defined_class: 'com.acme.Repo' } }]], { call: { defined_class: 'com.acme.Web' } }]]);
+
+  const report = noiseReport([noisy, clean], { own: ['com.acme'], maxKb: 1, maxCalls: 20 });
+  assert.deepEqual(report.packages.map((p) => [p.pkg, p.calls]), [['org.springframework', 30], ['com.acme', 3]]);
+  assert.deepEqual(report.hot.map((h) => [h.fn, h.max, h.recordings]), [['org.springframework.util.StringUtils#hasText', 30, 1]]);
+  assert.equal(Math.round(report.ownShare), 9);
+  assert.equal(report.oversize.length, 1);
+  assert.equal(report.failures.length, 2);
+
+  const ok = noiseReport([clean], { own: ['com.acme'] });
+  assert.deepEqual(ok.failures, []);
+  assert.equal(ok.ownShare, 100);
 });

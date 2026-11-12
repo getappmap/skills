@@ -103,6 +103,9 @@ Enable the hooks the target needs. Some are opt-in:
 | Python | outgoing HTTP (`http.client`, so `requests`/`urllib3` too) | `import appmap.http` in `conftest.py`, guarded by `os.environ.get("APPMAP") == "true"` |
 | Python | SQL, bare SQLAlchemy | `import appmap.sqlalchemy` (see **appmap-record**) |
 
+The table lists only the opt-in hooks known so far. For any other language
+or library, the one-recording check below is how you find out.
+
 Record **one** test that runs the target (**appmap-record**) and confirm the
 recording has the target's functions with their parameters. Confirm each
 hook with that recording before relying on its absence: zero
@@ -203,9 +206,9 @@ passes. Each names what to look for and the command that shows it.
 | Drift in the suite (branches) | which existing tests changed behavior between base and head | `analyze.mjs countdiff <base-recordings> <head-recordings>` |
 
 `countdiff` works per function. Use it instead of the whole-suite structural
-compare when the compare's text names every actor by package (`endaq#send`).
-Record both sides in the same checkout, as **Recording the base revision**
-(Phase 6) describes.
+compare when the compare's text names every actor by its package
+(`client#send` for every call into the `client` package). Record both sides
+in the same checkout, as **Recording the base revision** (Phase 6) describes.
 
 ## Phase 5 — Confirm every finding without the recorder
 

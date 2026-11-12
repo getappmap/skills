@@ -32,24 +32,34 @@ language: java                # ruby | python | javascript | java | other-lang
 appmap_dir: tmp/appmap        # where recordings are written (the default everywhere)
 packages:
 - path: com.mycorp.myproject  # your own code: recorded in full
-- path: org.springframework   # a framework: first call in, no internals
-  shallow: true
 ```
 
-Java names a package by its dotted name in both entries. Ruby names a gem
-with `gem:`, Python a distribution with `dist:`, Node a library with
-`module:`. Each language file shows its form.
+That is the whole starting config. Frameworks stay out until a question
+needs them (see the second rule below).
 
-Two rules:
+Java names a package by its dotted name. A framework entry, when you need
+one, names a Ruby gem with `gem:`, a Python distribution with `dist:`, a Node
+library with `module:`, and a Java package by its dotted name. Each language
+file shows its form.
+
+Three rules:
 
 - **Record your own code in full.** List the package that holds the
   application as a plain `path:` entry with no `shallow` key. Every call
   inside it is then recorded, and the trace shows the full call structure.
-- **Record frameworks and vendor code shallow, or leave them out.** Give a
-  framework entry `shallow: true` when you want to see that it was called.
-  Shallow keeps the first call into a package and drops the calls that
-  package makes to itself. HTTP requests, SQL queries, and exceptions are
-  captured by built-in hooks whether or not the framework is listed.
+- **Leave frameworks and vendor code out unless a question needs them.**
+  HTTP requests, SQL queries, and exceptions are captured by built-in hooks
+  whether or not the framework is listed, so most reviews need no framework
+  entry at all. When one is needed, name the narrowest package that answers
+  the question (`org.springframework.security.access`, not
+  `org.springframework`) and give it `shallow: true`.
+- **`shallow` limits depth, not breadth.** It keeps the first call into a
+  package and drops the calls that package makes to itself. Every call from
+  your code into the package is still a first call, so a framework whose
+  utilities your code calls everywhere (`StringUtils`, `Assert`,
+  `ObjectUtils`, `CollectionUtils`) fills the recording even when shallow.
+  The same goes for a callback from the framework into your code that calls
+  back into the framework.
 
 Two keys to always set the same way:
 
@@ -66,6 +76,10 @@ carry parameters. **appmap-record** has the record commands.
 A recording gets big when one small function runs thousands of times. The fix
 is `exclude:`, which removes named code from the recording while its callers
 stay in it.
+
+If most of a recording is a framework or library, the fix is the config
+entry that brought it in: remove it, or narrow it to the package the question
+is about. Excluding its utilities one by one does not converge.
 
 Measure before excluding. The AppMap CLI lists the most-called functions and
 how much of the file they account for:

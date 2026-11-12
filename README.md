@@ -13,6 +13,21 @@ directory is a self-contained skill (a `SKILL.md` the agent reads, plus any asse
 | [`appmap-setup`](appmap-setup/SKILL.md) | Get a repository recording AppMap data: config, one unit and one integration recording, noise exclusions, and the working record commands written into `gold_traces/manifest.yaml`. |
 | [`appmap-setup-review`](appmap-setup-review/SKILL.md) | Demonstrate a gold-trace review on an existing change: set up recording and gold traces on a BASE commit, replay onto HEAD, and run `appmap-review` between them. |
 
+## Which skill reviews my branch?
+
+Four skills can look at a branch. Which one fits depends on what the
+repository already has:
+
+| The repository has | Use |
+| --- | --- |
+| Gold traces (`gold_traces/`) | `appmap-review`, comparing the two revisions' gold traces. |
+| One recording of the same scenario on each branch, made by hand | `appmap-review`, ad-hoc mode. |
+| Nothing yet, and you want a lasting baseline for future reviews | `appmap-setup-review`: sets up gold traces on the base, then reviews. |
+| Nothing yet, and you want the bugs found now | `appmap-analyze`: writes scenario tests, records both revisions, and reports findings. |
+
+`appmap-analyze` also answers one-off questions about runtime behavior ("why
+is this slow", "who calls this") on any project.
+
 ## Use with Claude Code
 
 Symlink (or copy) the skills you want into `~/.claude/skills`, then invoke them by name:

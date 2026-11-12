@@ -117,11 +117,11 @@ as its `repr()`. Two consequences:
   queries a device, or fills a cache, recording does that too: extra I/O in the
   recording, changed cache state, and sometimes a different test outcome or much
   longer timings. Confirm such effects with a run without the agent.
-- **Positional optional arguments are recorded as their defaults** (agent
-  3.0.1): for `def f(self, a, b=None)`, a call `f(1, 2)` is recorded as
-  `b=None`. Keyword arguments are recorded correctly. The cause is the `"opt"`
-  branch of `set_params` in `_appmap/event.py`, which reads only `kwargs`.
-  Check a recorded default against the call site before using it as evidence.
+- **Agents before 4.0.0 record positional optional arguments as their
+  defaults**: for `def f(self, a, b=None)`, a call `f(1, 2)` is recorded as
+  `b=None`. Keyword arguments are recorded correctly. 4.0.0 records both
+  correctly. With an older agent, check a recorded default against the call
+  site before using it as evidence, or upgrade.
 
 ## Advanced usage
 
@@ -161,6 +161,8 @@ lacks `SQLAlchemy`):
   (logs go to stderr instead).
 - Use `appmap-python --enable-log` to explicitly create log files.
 
-**Supported versions:** Python 3.8-3.12, Django 3.2-<5, Flask 2-3,
-FastAPI ~0.110.0, pytest ~6, SQLAlchemy 1-2 (2.x SQL capture verified with the
-`appmap.sqlalchemy` import above).
+**Supported versions:** agent 4.0.0 requires Python 3.11 or later and is
+tested on 3.11-3.15 (a newer Python is not rejected, only untested; agent
+3.0.1 is the last for Python 3.8-3.10). Django 3.2-<5, Flask 2-3, FastAPI
+~0.110.0, pytest 7 (the version the agent's own tests use), SQLAlchemy 1-2
+(2.x SQL capture verified with the `appmap.sqlalchemy` import above).

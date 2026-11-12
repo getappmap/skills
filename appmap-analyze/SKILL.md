@@ -129,11 +129,12 @@ Recording changes what runs. Before a finding goes in the report:
 - **Timings under recording are not timings.** Value capture and event writing
   can turn milliseconds into seconds. Confirm any latency claim with a plain run
   (`time`, a profiler).
-- **Check the captured values against the source.** The AppMap Python agent
-  (3.0.1) records an optional parameter passed *positionally* as its default
-  value (`_appmap/event.py`, the `"opt"` branch of `set_params`). A recorded
-  `password=None` may mean "passed positionally". Only trust a recorded default
-  when the call site passes that argument by keyword or not at all.
+- **Check the captured values against the source.** A recorded value is the
+  agent's rendering of it, and agents have bugs. Python agents before 4.0.0,
+  for example, record an optional parameter passed *positionally* as its
+  default (`password=None` for a password that was passed); see
+  **appmap-record**, `languages/python.md`. Check the agent version before
+  trusting a recorded default.
 - **Run the whole suite and each new test alone.** A test that passes only
   after other tests ran is depending on shared state, which is often the
   finding.

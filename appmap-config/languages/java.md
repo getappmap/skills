@@ -26,8 +26,8 @@ packages:
   - util.Geometry                # a class
   - "cache.Cache#clear"          # a method; "#" or "." both work
   - com.mycorp.myproject.legacy  # absolute form
-- path: org.springframework      # framework: first call in, no internals
-  shallow: true
+- path: org.springframework.security.access  # a framework: the narrowest package
+  shallow: true                               # the question needs, first call in only
 
 # Label methods in code you cannot edit: methods: with class/name regexes.
 # This entry records ONLY the listed methods of that exact package.

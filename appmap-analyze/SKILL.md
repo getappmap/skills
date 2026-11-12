@@ -288,14 +288,78 @@ unchanged, with these differences:
   analysis, and that failing new tests are findings.
 - **What the change does** becomes **What the code does** for a whole-project
   analysis.
-- **Evidence** on each finding names the test that recorded it and the query
-  that shows it, so a reader can rerun it.
+- **Evidence** on each finding names the test that recorded it, the query
+  that shows it, so a reader can rerun it, and the **kind** of evidence it is:
+  *count*, *recorded value*, *thread*, *absence*, *timing* (confirmed without
+  the recorder), *base/head difference*, *failing test*, or *source only*.
+- **Show the evidence, not just a drawing of it** (see below), and link each
+  finding to the recording it came from.
+- **What the recordings showed** goes after **Checks performed**, before the
+  details fold (see below).
 - **Existing problems.** Mark findings that are already on the base
   ("existing, `develop`"). An analysis finds them as a matter of
   course, and the reader needs to know they are not the branch's.
 - **About the tooling** (optional, after the details fold): recorder side
   effects, agent bugs, and hooks you had to enable. Write it once; reference it
   from findings that depend on it.
+
+### Evidence
+
+appmap-review's format asks for an ASCII diagram on each finding. In an
+analysis, the tools' own output is usually the better picture, because the
+reader can rerun it and it cannot be drawn wrong:
+
+- **A trimmed `tree` excerpt**, with the command above it:
+
+  ```
+  $ node analyze.mjs tree tmp/appmap/pytest/test_busy_device.appmap.json --focus send --depth 3 --params
+  Transport#send(cmd=b'STATUS')  !! Timeout: no reply in 5.0s  [5.01s]   <thread 1>
+    Port#write(data=b'STATUS\r')
+    4309x [
+      Port#read(size=1) -> b''
+      Clock#now
+    ]
+  ```
+
+  The `4309x` line is the finding: four thousand reads for one command, and no
+  second write after the device said busy. Copy the lines exactly; mark
+  anything cut with `…`. Use `--params` when a value is the point, `--hide` to
+  drop calls that do not bear on it.
+- **A count table** from `find calls` or `countdiff` when the finding is a
+  number across tests or revisions.
+- **A drawn diagram** only for what no single output shows: two threads side
+  by side, a request and a late reply on a timeline, the base and head paths
+  next to each other. Draw it from the recording, and mark any step that comes
+  from the source rather than the recording.
+
+Never write tool output by hand. If the command was not run, there is no
+excerpt.
+
+**Link the recordings.** `tmp/appmap` is not committed, so a link into it is
+dead for every other reader. Copy each recording a finding cites next to the
+report (`<report dir>/evidence/<test>.appmap.json`), commit it with the report,
+and link it from the finding's Evidence line, with the event id when the
+finding is about one call (`evidence/test_busy_device.appmap.json`, event
+1842). The AppMap IDE extensions open these files as diagrams. Values in
+recordings are real: do not commit a recording that holds secrets or personal
+data; cite the excerpt instead.
+
+### What the recordings showed
+
+One short table, one row per finding, referencing it by number (the finding
+itself stays in **Findings**):
+
+| # | Evidence | Found by the recording, or confirmed by it |
+| --- | --- | --- |
+| 1 | count | found: the source reads in a loop; only the recording shows 4309 reads and no retry for one busy reply |
+| 2 | recorded value | found: `timeout=None` reaches the socket, though the caller passed 2.0 |
+| 3 | source only | — |
+
+Then one sentence with the totals ("5 of 7 findings rest on recorded evidence;
+3 were found by it, 2 confirmed"). Be honest about the split: a finding that a
+careful read of the source would have caught is "confirmed", not "found", and
+a source-only finding says so. This section is the reader's answer to "what
+did running the code add?", and it is only useful if it can say "not much".
 
 Commit the new tests and the report on a branch. The tests are the regression
 tests the findings' **Fix** sections name.

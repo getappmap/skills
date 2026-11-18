@@ -245,6 +245,15 @@ Then:
 - Spell it for the voice in the voice input only ("pull request forty-three
   eight forty-three", "App Map"); the on-screen caption keeps the normal
   spelling.
+- Plain, precise words, not slang: "mocked", not "faked".
+- Never name the tools that make the movie (the video tool, the voice
+  engine, the hosting). Say what they do: "a video tool cuts the movie".
+  AppMap and Claude may be named, because the movie is about what they found.
+- Check every line of the voice with speech-to-text, one line at a time, and
+  regenerate any line that comes back wrong. Possessives ("the note's own"
+  heard as "notes on"), short names ("Maya" heard as "Meyer") and words like
+  "cheap" are the usual misses. Reword the caption when respelling alone does
+  not fix it.
 - The last scene's line is the sentence, unless the "how this was made"
   ending follows it.
 
@@ -263,7 +272,7 @@ a scene only when its row says so.
 | 5 | how it's built | footage | The portrait design diagram | "Here is how it's built. [Step one] and [the decision it makes]." · "[The usual parts that run]. Then new code [does the new thing]." · "[The riskiest part] does one thing differently. [What it does]." |
 | 6 | three quick reviews | statement | Title: "Three quick reviews". Support: "Design · Speed · Security" | "Design: [one sentence, with its tradeoff]." · "Speed: [one sentence, with its cost]." · "Security: [one sentence: what leaks or does not, and the real risk]." |
 | 7 | one per defect step (skip if none) | footage | The screenshot for the user it hurts | "And [it goes wrong]. [Person] is [role], but [the condition]." · "[What the old screen shows them]." then "In the new [view], [person] sees [the difference]." |
-| 8 | where the data comes from | footage | The data slide | "Here is where the data comes from." · "AppMap recorded [the project's own tests], plus [N] new test cases written for this review." · "They ran before and after the change, against a real database and cache. Nothing was faked." |
+| 8 | where the data comes from | footage | The data slide | "Here is where the data comes from." · "AppMap recorded [the project's own tests], plus [N] new test cases written for this review." · "They ran before and after the change, against a real database and cache. Nothing was mocked." |
 | 9 | one per trace step | footage | One trace slide per step | Step 1: "AppMap recorded what the code did, step by step." · "First, [the usual rule] asks: [question]? [Answer]." · "[What that loads]." Next steps: "Next, [the new code] asks its own question: [question]?" · "[The answer]. So [the result]." Last step: "[Old view shows X]. [New view shows Y]." · "Same person, two rules, two answers." |
 | 10 | the review's verdict (skip if nothing surfaced) | statement | Title: "What the review says" | "AppMap's review rates this [level]. [What it does or does not expose]." · "[Whether it looks deliberate, and the evidence]." · "The fix is simple: [the fix, in plain words]." |
 | 11 | outro | statement | Title: "In one sentence". Support: "[Still live / Fixed] in [project] as of [today]" | "This change adds [what works]." · "And [the one defect, in a user's words]." · "As of [today], this bug is still live in [project]." (or "fixed in [commit]") |

@@ -63,6 +63,32 @@ fake a screen, a count, a diagram or a voice.
 - An AWS profile for the voice (AWS Polly), named as `aws_profile` in the
   library's `showcase_settings.yaml`. A person picks it. Never pick one.
 
+## Real dependencies, never mocks
+
+The movie is only worth watching if it shows what the code really does, so
+everything it records runs against real services: the app's real database,
+cache, queue and any service it calls. A recording of a test where SQL and
+HTTP are mocked is a call stack you could read in the source. It shows no
+queries, no calls out, and no proof.
+
+- Start what the app needs before step 2. Use the project's own
+  `docker-compose.yml` or dev container when it has one. Otherwise start the
+  official image of each service (`postgres`, `clickhouse/clickhouse-server`,
+  `redis`, and so on) and point the app at it with test settings.
+- A service you cannot run locally (a paid API, a partner system) gets a fake
+  built from the project's own code that speaks the real protocol over a real
+  socket (see **appmap-analyze**, Phase 2), never an in-process mock of the
+  client.
+- Check the recording before you use it: it must contain at least one SQL or
+  HTTP event for the path. Zero means a mock, or a hook that is not on (see
+  **appmap-analyze**, Phase 0). Fix that before going on.
+- If a dependency cannot be started, make the movie from what you can run and
+  name what is missing in `movie.json` under `"missing"`. Never present a
+  mocked run as the real one.
+- Some drivers are not recorded yet (for example ClickHouse from Python,
+  getappmap/appmap-python#392). The browser run and HTTP view still work; say
+  in `movie.json` which queries the diagram cannot show.
+
 ## When there is no user path
 
 Docs, CI, tooling, or a refactor with no behavior change: skip steps 2 and 3,

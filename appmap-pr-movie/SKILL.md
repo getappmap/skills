@@ -184,7 +184,7 @@ Record the same requests on base and head from the same checkout path (see
 
 Keep only the request on the path. Mark what is new. Name lanes as a reader
 would (Browser, TopicView, Renderer, Database). Save as `poster.png`,
-1080 by 1920.
+1080 by 2346.
 
 Check the diagram against `results.json`. If they disagree, find out which is
 wrong before going on.
@@ -295,7 +295,7 @@ screen:
 | --- | --- | --- |
 | intro | statement | What the app is, what the change adds, the pull request number, the merge date |
 | one per intended-use step | footage | The screenshot, full screen |
-| how it's built | footage | One portrait (1080 by 1920) diagram of the change, plain words first |
+| how it's built | footage | One portrait (1080 by 2346) diagram of the change, plain words first |
 | three reads | statement | Design, Speed, Security, one line each |
 | one per defect step | footage | The screenshot for the user it hurts, full screen |
 | where the data comes from | footage | One portrait slide: the project's tests, the new test cases, run before and after, real database and cache |
@@ -311,9 +311,11 @@ Layout rules for maximum readability, learned the hard way:
   `media: {frame: full, align: top, motion: still, tiktok: {fit: fill, focus: top}}`,
   so it fills the phone screen edge to edge. Never a phone frame inside the
   phone, never a column of text beside a picture.
-- Browser screenshots use `fit: cover`. Drawn slides (the design, the data
-  slide, the trace steps, the "how this was made" steps) use `fit: contain`:
-  the stage is not exactly 9:16, and cover crops their sides.
+- Every picture uses `fit: cover`. Draw slides (the design, the data slide,
+  the trace steps, the "how this was made" steps) at the movie's own shape,
+  1080 by 2346 (the same shape as the studio's 1320 by 2868 canvas), so cover
+  crops nothing and contain is never needed. A 1080 by 1920 slide gets its
+  sides cut with cover and a black band under it with contain.
 - Take browser screenshots at phone size (430 by 932, scale 3) and keep the
   part that matters in the top 80%: the subtitle sits at the bottom.
 - Plain-text or code screens: set the font to at least 27 pixels before the
@@ -324,9 +326,10 @@ Layout rules for maximum readability, learned the hard way:
 - Color carries one meaning across the whole movie: green is what works as
   intended, amber is the new or risky part, red is what goes wrong, blue is
   neutral new parts. Never color alone: every card also says it in words.
-- Draw every diagram and trace step at 1080 by 1920, in plain words at 38
+- Draw every diagram and trace step at 1080 by 2346, in plain words at 38
   pixels or more, with the code names small (28 pixels) underneath for
-  developers. Leave the bottom fifth empty for the subtitles.
+  developers. Keep everything in the top 75%: the subtitles sit in the
+  bottom quarter and must never cover a card.
 - Split a trace into steps of two or three boxes each, one slide per step,
   about ten seconds each. A whole trace on one slide flashes past.
 - A wide (4:3) cut for desktops is optional and comes second. If you make one,

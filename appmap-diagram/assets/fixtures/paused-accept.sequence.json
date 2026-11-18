@@ -1,0 +1,379 @@
+{
+  "actors": [
+    {
+      "id": "package:nova_server",
+      "name": "nova_server",
+      "order": 1000
+    },
+    {
+      "id": "package:nova_server/db/models",
+      "name": "models",
+      "order": 1000
+    },
+    {
+      "id": "database:Database",
+      "name": "Database",
+      "order": 4000
+    }
+  ],
+  "rootActions": [
+    {
+      "nodeType": 6,
+      "callee": "database:Database",
+      "query": "INSERT INTO games (name, time_compression, status, created_by_user_id, duration, stars_per_player, start_time, end_time, event_counter, last_action_time, ended, ended_at, public_id, result_published_at, paused, paused_at, total_paused, auto_resume_at, is_private, join_code, join_code_created_at, generated_map, autopilot_enabled, factory_cost, spy_probe_cost, death_probe_cost, speed_cost, battle_power_cost, range_cost, probe_shield_cost, death_shield_cost, gate_cost_per_k, map_type, saved_map_name, starting_ships, starting_cash) VALUES (%(name)s::VARCHAR, %(time_compression)s, %(status)s, %(created_by_user_id)s::INTEGER, %(duration)s, %(stars_per_player)s::INTEGER, %(start_time)s::TIMESTAMP WITH TIME ZONE, %(end_time)s::TIMESTAMP WITH TIME ZONE, %(event_counter)s::INTEGER, %(last_action_time)s::TIMESTAMP WITH TIME ZONE, %(ended)s, %(ended_at)s::TIMESTAMP WITH TIME ZONE, %(public_id)s::UUID, %(result_published_at)s::TIMESTAMP WITH TIME ZONE, %(paused)s, %(paused_at)s::TIMESTAMP WITH TIME ZONE, %(total_paused)s, %(auto_resume_at)s::TIMESTAMP WITH TIME ZONE, %(is_private)s, %(join_code)s::VARCHAR, %(join_code_created_at)s::TIMESTAMP WITH TIME ZONE, %(generated_map)s, %(autopilot_enabled)s, %(factory_cost)s::INTEGER, %(spy_probe_cost)s::INTEGER, %(death_probe_cost)s::INTEGER, %(speed_cost)s::INTEGER, %(battle_power_cost)s::INTEGER, %(range_cost)s::INTEGER, %(probe_shield_cost)s::INTEGER, %(death_shield_cost)s::INTEGER, %(gate_cost_per_k)s::INTEGER, %(map_type)s::VARCHAR, %(saved_map_name)s::VARCHAR, %(starting_ships)s::INTEGER, %(starting_cash)s::INTEGER) RETURNING games.id",
+      "digest": "eadbae83bef7a7f8cfbdd5d6a22bb56e8e590fed56f4e3184c54d70573870f0d",
+      "subtreeDigest": "e84ef3c24f8e7ce18a3038faa5e68b1d3f8fef3bc67f16a5d83dd319a2de9ef2",
+      "children": [],
+      "elapsed": 0.0015024999738670886,
+      "eventIds": [
+        1
+      ]
+    },
+    {
+      "nodeType": 6,
+      "callee": "database:Database",
+      "query": "-- 30 times\nINSERT INTO players (game_id, user_id, abandoned_at, name, wealth, battle_power, range, speed, final_rank, final_stars, last_action_at, autopilot_since, autopilot_last_pass_at, autopilot_warned_at, autopilot_opt_out) SELECT p0::INTEGER, p1::INTEGER, p2::TIMESTAMP WITH TIME ZONE, p3::VARCHAR, p4::INTEGER, p5::INTEGER, p6::FLOAT, p7::FLOAT, p8::INTEGER, p9::INTEGER, p10::TIMESTAMP WITH TIME ZONE, p11::TIMESTAMP WITH TIME ZONE, p12::TIMESTAMP WITH TIME ZONE, p13::TIMESTAMP WITH TIME ZONE, p14::BOOLEAN FROM (VALUES (%(game_id__0)s::INTEGER, %(user_id__0)s::INTEGER, %(abandoned_at__0)s::TIMESTAMP WITH TIME ZONE, %(name__0)s::VARCHAR, %(wealth__0)s::INTEGER, %(battle_power__0)s::INTEGER, %(range__0)s, %(speed__0)s, %(final_rank__0)s::INTEGER, %(final_stars__0)s::INTEGER, %(last_action_at__0)s::TIMESTAMP WITH TIME ZONE, %(autopilot_since__0)s::TIMESTAMP WITH TIME ZONE, %(autopilot_last_pass_at__0)s::TIMESTAMP WITH TIME ZONE, %(autopilot_warned_at__0)s::TIMESTAMP WITH TIME ZONE, %(autopilot_opt_out__0)s, 0), (%(game_id__1)s::INTEGER, %(user_id__1)s::INTEGER, %(abandoned_at__1)s::TIMESTAMP WITH TIME ZONE, %(name__1)s::VARCHAR, %(wealth__1)s::INTEGER, %(battle_power__1)s::INTEGER, %(range__1)s, %(speed__1)s, %(final_rank__1)s::INTEGER, %(final_stars__1)s::INTEGER, %(last_action_at__1)s::TIMESTAMP WITH TIME ZONE, %(autopilot_since__1)s::TIMESTAMP WITH TIME ZONE, %(autopilot_last_pass_at__1)s::TIMESTAMP WITH TIME ZONE, %(autopilot_warned_at__1)s::TIMESTAMP WITH TIME ZONE, %(autopilot_opt_out__1)s, 1)) AS imp_sen(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, sen_counter) ORDER BY sen_counter RETURNING players.id, players.id AS id__1",
+      "digest": "3bc864724b2e4b14b85c9307494b55e355c0bf5cc735cdb366f0cade1ef4aa22",
+      "subtreeDigest": "7060a9dfe175ef00985bfa0da418c97f4e129423aac42a75b5c23e86f6b0f24a",
+      "children": [],
+      "elapsed": 0.001174582983367145,
+      "eventIds": [
+        3
+      ]
+    },
+    {
+      "nodeType": 6,
+      "callee": "database:Database",
+      "query": "-- 24 times\nINSERT INTO stars (game_id, name, x, y, wealth, num_ships, num_factories, has_spy_shield, has_death_shield, owner_id, home_world_of_id, is_dead) SELECT p0::INTEGER, p1::VARCHAR, p2::INTEGER, p3::INTEGER, p4::INTEGER, p5::INTEGER, p6::INTEGER, p7::BOOLEAN, p8::BOOLEAN, p9::INTEGER, p10::INTEGER, p11::BOOLEAN FROM (VALUES (%(game_id__0)s::INTEGER, %(name__0)s::VARCHAR, %(x__0)s::INTEGER, %(y__0)s::INTEGER, %(wealth__0)s::INTEGER, %(num_ships__0)s::INTEGER, %(num_factories__0)s::INTEGER, %(has_spy_shield__0)s, %(has_death_shield__0)s, %(owner_id__0)s::INTEGER, %(home_world_of_id__0)s::INTEGER, %(is_dead__0)s, 0), (%(game_id__1)s::INTEGER, %(name__1)s::VARCHAR, %(x__1)s::INTEGER, %(y__1)s::INTEGER, %(wealth__1)s::INTEGER, %(num_ships__1)s::INTEGER, %(num_factories__1)s::INTEGER, %(has_spy_shield__1)s, %(has_death_shield__1)s, %(owner_id__1)s::INTEGER, %(home_world_of_id__1)s::INTEGER, %(is_dead__1)s, 1)) AS imp_sen(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, sen_counter) ORDER BY sen_counter RETURNING stars.id, stars.id AS id__1",
+      "digest": "454bc26b1865f04dfb80f069673ceabf31f41701cc3df262d9d6043e397e7dc4",
+      "subtreeDigest": "38a6ab661ef6aedb6dc7a9073a17acc53e7dda4ebfbecc15181b3b7441bcf8ae",
+      "children": [],
+      "elapsed": 0.000900499988347292,
+      "eventIds": [
+        5
+      ]
+    },
+    {
+      "nodeType": 6,
+      "callee": "database:Database",
+      "query": "UPDATE games SET paused=%(paused)s, paused_at=%(paused_at)s::TIMESTAMP WITH TIME ZONE WHERE games.id = %(games_id)s::INTEGER",
+      "digest": "7802b501da034d7b0932aba48ea2e990c9b5dd535a980e5d40c46dcefadcbc21",
+      "subtreeDigest": "1fb4edfbf3c909f5f230fa0ce5acd17cb1527a26d24e103a2a25bbd29cf9c7b9",
+      "children": [],
+      "elapsed": 0.0004247500328347087,
+      "eventIds": [
+        7
+      ]
+    },
+    {
+      "nodeType": 3,
+      "callee": "package:nova_server",
+      "name": "offer",
+      "static": true,
+      "digest": "73f35b1b438ebb7178c137d44fad8086d72b97c38788c79a4b02335bb4b82627",
+      "subtreeDigest": "d7cb3dd1acd7ffe5e212cd15f3829fe2ed1d5ea08f473816927d59c56861721c",
+      "stableProperties": {
+        "event_type": "function",
+        "id": "nova_server/contracts.offer",
+        "raises_exception": false
+      },
+      "returnValue": {
+        "returnValueType": {
+          "name": "nova_server.db.models.Contract"
+        },
+        "raisesException": false
+      },
+      "children": [
+        {
+          "nodeType": 3,
+          "caller": "package:nova_server",
+          "callee": "package:nova_server",
+          "name": "_wall_now",
+          "static": true,
+          "digest": "eb7b3745a83c257a4899ee19f81445c81500440aa1896e3dc8947b16d645ec97",
+          "subtreeDigest": "7b2d32d2d8ba5ef13e03a4698991b63744d4b68f8a1498517a5267246b46d2f9",
+          "stableProperties": {
+            "event_type": "function",
+            "id": "nova_server/contracts._wall_now",
+            "raises_exception": false
+          },
+          "returnValue": {
+            "returnValueType": {
+              "name": "datetime.datetime"
+            },
+            "raisesException": false
+          },
+          "children": [],
+          "elapsed": 0.000010967254638671875,
+          "eventIds": [
+            10
+          ]
+        },
+        {
+          "nodeType": 3,
+          "caller": "package:nova_server",
+          "callee": "package:nova_server",
+          "name": "_is_over",
+          "static": true,
+          "digest": "5a21d6f42a2bbf2ef7d9d3cd5ff245b1c515ae6718a83188708b236bb71d7e26",
+          "subtreeDigest": "055eae0cb591309d9a43891bef8e832f7b7b74d5eade648c64c69d351e306503",
+          "stableProperties": {
+            "event_type": "function",
+            "id": "nova_server/contracts._is_over",
+            "raises_exception": false
+          },
+          "returnValue": {
+            "returnValueType": {
+              "name": "boolean"
+            },
+            "raisesException": false
+          },
+          "children": [
+            {
+              "nodeType": 3,
+              "caller": "package:nova_server",
+              "callee": "package:nova_server/db/models",
+              "name": "game_now",
+              "static": false,
+              "digest": "96de740ca3706b7b4a61f5707f29a15610db7767a329f29d4eda3a5b3c913664",
+              "subtreeDigest": "7d1fb26b8c3e84ec1e31b593d5d97c4bf43f6ce22964aaedd64d5f693ad073c4",
+              "stableProperties": {
+                "event_type": "function",
+                "id": "nova_server/db/models/Game#game_now",
+                "raises_exception": false
+              },
+              "returnValue": {
+                "returnValueType": {
+                  "name": "datetime.datetime"
+                },
+                "raisesException": false
+              },
+              "children": [],
+              "elapsed": 0.000007152557373046875,
+              "eventIds": [
+                13
+              ]
+            }
+          ],
+          "elapsed": 0.00009632110595703125,
+          "eventIds": [
+            12
+          ]
+        },
+        {
+          "nodeType": 1,
+          "count": 2,
+          "digest": "loop",
+          "subtreeDigest": "loop:db8f1198f643d7db6e97e1ff80a84675e1b4b1a27fd30292e74dcd84024365cf",
+          "children": [
+            {
+              "nodeType": 3,
+              "caller": "package:nova_server",
+              "callee": "package:nova_server",
+              "name": "_player_in_game",
+              "static": true,
+              "digest": "79b0c02cf3248dc1b20f88c78ad83c8c93e5776f17f1253e31a0b768023fe68e",
+              "subtreeDigest": "00d5f4cc624f7b31e49945aa182cb04de67e901706cbe307bf042d09af099434",
+              "stableProperties": {
+                "event_type": "function",
+                "id": "nova_server/contracts._player_in_game",
+                "raises_exception": false
+              },
+              "returnValue": {
+                "returnValueType": {
+                  "name": "nova_server.db.models.Player"
+                },
+                "raisesException": false
+              },
+              "children": [],
+              "elapsed": 0.000018596649169921875,
+              "eventIds": [
+                16,
+                18
+              ]
+            }
+          ],
+          "elapsed": 0.000018596649169921875,
+          "eventIds": []
+        },
+        {
+          "nodeType": 1,
+          "count": 2,
+          "digest": "loop",
+          "subtreeDigest": "loop:487c8a3a5652c91fe9bd87315006df6615919c85a296cecc4b70ed92b011e9e9",
+          "children": [
+            {
+              "nodeType": 3,
+              "caller": "package:nova_server",
+              "callee": "package:nova_server/db/models",
+              "name": "is_nobody (get)",
+              "static": false,
+              "digest": "e41d0075f5b674f6d366dc2608c9792167fbfcd622273efd75eb90af0e172679",
+              "subtreeDigest": "bed2262f3c52c10c04a669085beab627a258c532342877464bf2fdc421bdc1ed",
+              "stableProperties": {
+                "event_type": "function",
+                "id": "nova_server/db/models/Player#is_nobody (get)",
+                "raises_exception": false
+              },
+              "returnValue": {
+                "returnValueType": {
+                  "name": "boolean"
+                },
+                "raisesException": false
+              },
+              "children": [],
+              "elapsed": 0.0000030994415283203125,
+              "eventIds": [
+                20,
+                22
+              ]
+            }
+          ],
+          "elapsed": 0.0000030994415283203125,
+          "eventIds": []
+        },
+        {
+          "nodeType": 6,
+          "caller": "package:nova_server",
+          "callee": "database:Database",
+          "query": "INSERT INTO contracts (game_id, offerer_id, recipient_id, amount, status, condition_kind, condition_origin_id, condition_destination_id, condition_num_ships, accepted_event_id, settlement_event_id, expires_at) VALUES (%(game_id)s::INTEGER, %(offerer_id)s::INTEGER, %(recipient_id)s::INTEGER, %(amount)s::INTEGER, %(status)s, %(condition_kind)s::VARCHAR, %(condition_origin_id)s::INTEGER, %(condition_destination_id)s::INTEGER, %(condition_num_ships)s::INTEGER, %(accepted_event_id)s::INTEGER, %(settlement_event_id)s::INTEGER, %(expires_at)s::TIMESTAMP WITH TIME ZONE) RETURNING contracts.id, contracts.created_at",
+          "digest": "a52526e705cd74c3c1de625a03e9c9e25753ae9b314a09464599ac7163b4021c",
+          "subtreeDigest": "bd683086712095a8f08e782e4043f4edc5410ea008b744800eebac749af50ab9",
+          "children": [],
+          "elapsed": 0.0014512499910779297,
+          "eventIds": [
+            24
+          ]
+        },
+        {
+          "nodeType": 3,
+          "caller": "package:nova_server",
+          "callee": "package:nova_server",
+          "name": "publish_game",
+          "static": true,
+          "digest": "39ed0f51326182a1927cc627d1dd3c990cf37b523033929200d35cd840fbc2c2",
+          "subtreeDigest": "f962fa241b654f702233388f4f80cd4eadeff73df830724a32f343e0c616572c",
+          "stableProperties": {
+            "event_type": "function",
+            "id": "nova_server/notify.publish_game",
+            "raises_exception": false
+          },
+          "returnValue": {
+            "returnValueType": {
+              "name": "builtins.NoneType"
+            },
+            "raisesException": false
+          },
+          "children": [
+            {
+              "nodeType": 6,
+              "caller": "package:nova_server",
+              "callee": "database:Database",
+              "query": "SELECT pg_notify(%(c)s, %(p)s)",
+              "digest": "2a3509b362286612d55bd506fcfe723466a8a1952a76b6953d7a22bee9dc2665",
+              "subtreeDigest": "3812e2a1de11e6573064901e507e620c46841b0a4fa63f620a884ba577fb0871",
+              "children": [],
+              "elapsed": 0.00040020799497142434,
+              "eventIds": [
+                27
+              ]
+            }
+          ],
+          "elapsed": 0.001104116439819336,
+          "eventIds": [
+            26
+          ]
+        }
+      ],
+      "elapsed": 0.00481414794921875,
+      "eventIds": [
+        9
+      ]
+    },
+    {
+      "nodeType": 3,
+      "callee": "package:nova_server",
+      "name": "accept",
+      "static": true,
+      "digest": "d24bad625709c34eb9f929e18d1ad0b0171eb890884c632732d45bc7fb3d414c",
+      "subtreeDigest": "d1dbcde2a8a4e4719119696d5cb4c3d0e22fb9b054c736452f7c9c8993ade1ba",
+      "stableProperties": {
+        "event_type": "function",
+        "id": "nova_server/contracts.accept",
+        "raises_exception": true
+      },
+      "returnValue": {
+        "raisesException": true
+      },
+      "children": [
+        {
+          "nodeType": 3,
+          "caller": "package:nova_server",
+          "callee": "package:nova_server",
+          "name": "_is_over",
+          "static": true,
+          "digest": "5a21d6f42a2bbf2ef7d9d3cd5ff245b1c515ae6718a83188708b236bb71d7e26",
+          "subtreeDigest": "055eae0cb591309d9a43891bef8e832f7b7b74d5eade648c64c69d351e306503",
+          "stableProperties": {
+            "event_type": "function",
+            "id": "nova_server/contracts._is_over",
+            "raises_exception": false
+          },
+          "returnValue": {
+            "returnValueType": {
+              "name": "boolean"
+            },
+            "raisesException": false
+          },
+          "children": [
+            {
+              "nodeType": 3,
+              "caller": "package:nova_server",
+              "callee": "package:nova_server/db/models",
+              "name": "game_now",
+              "static": false,
+              "digest": "96de740ca3706b7b4a61f5707f29a15610db7767a329f29d4eda3a5b3c913664",
+              "subtreeDigest": "7d1fb26b8c3e84ec1e31b593d5d97c4bf43f6ce22964aaedd64d5f693ad073c4",
+              "stableProperties": {
+                "event_type": "function",
+                "id": "nova_server/db/models/Game#game_now",
+                "raises_exception": false
+              },
+              "returnValue": {
+                "returnValueType": {
+                  "name": "datetime.datetime"
+                },
+                "raisesException": false
+              },
+              "children": [],
+              "elapsed": 0.0000057220458984375,
+              "eventIds": [
+                33
+              ]
+            }
+          ],
+          "elapsed": 0.00006794929504394531,
+          "eventIds": [
+            32
+          ]
+        }
+      ],
+      "elapsed": 0.00013375282287597656,
+      "eventIds": [
+        31
+      ]
+    },
+    {
+      "nodeType": 6,
+      "callee": "database:Database",
+      "query": "SELECT contracts.id, contracts.game_id, contracts.offerer_id, contracts.recipient_id, contracts.amount, contracts.status, contracts.condition_kind, contracts.condition_origin_id, contracts.condition_destination_id, contracts.condition_num_ships, contracts.accepted_event_id, contracts.settlement_event_id, contracts.created_at, contracts.expires_at \nFROM contracts \nWHERE contracts.id = %(pk_1)s::INTEGER",
+      "digest": "ee8739baab03b8517eddc8408fb8704a2432d5843d05d2de3c538fad80d2b33b",
+      "subtreeDigest": "7d28eba5579831d77b6f0cecf1c5768ed4bf9b3f4c473178091ab5b3e4c67556",
+      "children": [],
+      "elapsed": 0.0003605840029194951,
+      "eventIds": [
+        37
+      ]
+    }
+  ]
+}

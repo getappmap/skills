@@ -305,6 +305,27 @@ screen:
 
 The scenes and their lines are the standard script in step 6.
 
+The look comes from the repository under review, not from AppMap. A movie
+about a Discourse change looks like Discourse; a movie about another
+company's change looks like that company. Before drawing anything:
+
+1. Find the project's own style in the repository: its brand or design
+   guidelines if it has them, otherwise its stylesheet color variables and
+   fonts (for Discourse, the color scheme and CSS variables under
+   `app/assets/stylesheets`), its logo, and the app's screenshots from step 3.
+2. Write them once into `showcases/<id>/theme.yaml` (colors, fonts) and use
+   the same values in every drawn slide: background, text, headings, the
+   neutral card border and the accent.
+3. Put the project's logo in `meta.watermark` only if its license allows
+   reuse; otherwise use its name as a text mark.
+4. Record where each value came from (file and line) in `meta.notes`.
+
+The meaning colors below stay the same in every movie, so a viewer learns
+them once. When the project's own palette already uses green, amber or red,
+pick its nearest shades for those meanings rather than inventing new ones.
+If the repository has no findable style, say so in `meta.notes` and use a
+plain neutral look; never borrow another brand's colors.
+
 Layout rules for maximum readability, learned the hard way:
 
 - Every picture is `theme: footage` with
@@ -408,3 +429,6 @@ with the diagram as a still frame, so GitHub plays it inline.
   defect for Alex, an admin outside the group; then the trace in three steps.
 - Outro: "So this pull request adds Markdown views that work, and one rule
   that hides whispers from admins outside the whisper group."
+- Look: Discourse's own colors and type, taken from its stylesheets in the
+  repository. The first cut used a plain neutral look before this rule
+  existed, so it does not yet follow it.

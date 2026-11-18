@@ -64,6 +64,7 @@ if (command === 'archive') {
   for (const [name, content] of Object.entries(traces)) {
     fs.mkdirSync(path.join(out, name), { recursive: true });
     fs.writeFileSync(path.join(out, name, 'sequence.json'), content);
+    fs.writeFileSync(path.join(out, name + '.appmap.json'), content); // the recording itself, as the real restore leaves it
   }
 } else if (command === 'compare') {
   const out = option('--output-dir');
@@ -368,4 +369,58 @@ test('compare ad-hoc: rejects one side only, a mix with --fresh, and a missing f
   const missing = runReview(server, 'compare', '--base-appmap', one, '--head-appmap', path.join(root, 'nope.appmap.json'), '--appmap-cli', cli, '--workspace', workspace);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /Recording not found: .*nope\.appmap\.json/);
+});
+
+test('compare ad-hoc: directories and archives pair up by path, in any mix', (t) => {
+  const { root, server, workspace } = makeRepo(t);
+  const cli = `${process.execPath} ${path.join(root, 'fake-cli.mjs')}`;
+  fs.rmSync(path.join(server, 'gold_traces'), { recursive: true });
+  writeRecording(root, 'old/pytest/checkout.appmap.json', 'checkout v1');
+  writeRecording(root, 'old/pytest/login.appmap.json', 'login v1');
+  writeRecording(root, 'new/pytest/checkout.appmap.json', 'checkout v2');
+  writeRecording(root, 'new/pytest/login.appmap.json', 'login v1');
+  writeRecording(root, 'new/pytest/refund.appmap.json', 'refund v1');
+  const dirs = runReview(server, 'compare', '--base-appmap', path.join(root, 'old'), '--head-appmap', path.join(root, 'new'),
+    '--appmap-cli', cli, '--workspace', workspace);
+  assert.equal(dirs.status, 0, dirs.stderr);
+  assert.match(dirs.stdout, /Base: recordings under .*old \(2 recordings\)\n/);
+  assert.match(dirs.stdout, /Head: recordings under .*new \(3 recordings\)\n/);
+  assert.match(dirs.stdout, /Traces: 1 changed, 1 new, 0 removed\./);
+  assert.match(dirs.stdout, /changed  pytest\/checkout\n/);
+
+  // The fake CLI's archive is the JSON its `archive` command wrote; keep the base one.
+  const tar = path.join(root, 'old.tar');
+  fs.copyFileSync(path.join(workspace, 'base', '.appmap', 'archive', 'full', 'base.tar'), tar);
+  const mixed = runReview(server, 'compare', '--base-archive', tar, '--head-appmap', path.join(root, 'new'),
+    '--appmap-cli', cli, '--workspace', workspace);
+  assert.equal(mixed.status, 0, mixed.stderr);
+  assert.match(mixed.stderr, /Restoring base from .*old\.tar/);
+  assert.doesNotMatch(mixed.stderr, /Archiving base/);
+  assert.match(mixed.stdout, /Base: archive .*old\.tar \(2 recordings\)\n/);
+  assert.match(mixed.stdout, /Traces: 1 changed, 1 new, 0 removed\./);
+
+  const both = runReview(server, 'compare', '--base-archive', tar, '--head-archive', tar, '--appmap-cli', cli, '--workspace', workspace);
+  assert.equal(both.status, 0, both.stderr);
+  assert.match(both.stdout, /Traces: 0 changed, 0 new, 0 removed\./);
+});
+
+test('compare ad-hoc: rejects a file against a directory or archive, both forms on one side, and what is missing', (t) => {
+  const { root, server, workspace } = makeRepo(t);
+  const cli = `${process.execPath} ${path.join(root, 'fake-cli.mjs')}`;
+  const one = writeRecording(root, 'one.appmap.json', 'v1');
+  writeRecording(root, 'dir/one.appmap.json', 'v1');
+  fs.mkdirSync(path.join(root, 'empty'));
+  const run = (...args) => runReview(server, 'compare', ...args, '--appmap-cli', cli, '--workspace', workspace);
+  const fileAndDir = run('--base-appmap', one, '--head-appmap', path.join(root, 'dir'));
+  assert.equal(fileAndDir.status, 1);
+  assert.match(fileAndDir.stderr, /One recording file compares only with one recording file/);
+  const twice = run('--base-appmap', one, '--base-archive', one, '--head-appmap', one);
+  assert.equal(twice.status, 1);
+  assert.match(twice.stderr, /--base-appmap or --base-archive, not both/);
+  const empty = run('--base-appmap', path.join(root, 'empty'), '--head-appmap', path.join(root, 'dir'));
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /No recordings \(\.appmap\.json\) under .*empty/);
+  const noTar = run('--base-archive', path.join(root, 'nope.tar'), '--head-appmap', path.join(root, 'dir'));
+  assert.equal(noTar.status, 1);
+  assert.match(noTar.stderr, /Archive not found: .*nope\.tar/);
 });

@@ -188,11 +188,28 @@ node "${CLAUDE_SKILL_DIR}/assets/review.mjs" compare \
 Run it inside the project so the right `appmap.yml` is found. Both files are
 copied to one trace name, so timestamp-named files compare as one trace. Give the
 scenario a `--name`, and pass the revisions when the branches are known so the
-helper prints the source diff. What differs from the gold-traces path:
+helper prints the source diff.
+
+For more than one recording per side, pass each side as a directory or as an
+AppMap archive (**appmap-archive** makes one). The two forms can be mixed:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/assets/review.mjs" compare \
+  --base-appmap <directory of base recordings> --head-appmap <directory of head recordings>
+node "${CLAUDE_SKILL_DIR}/assets/review.mjs" compare \
+  --base-archive <base.tar> --head-archive <head.tar>
+```
+
+Recordings pair up by path, so the same test needs the same path below each
+directory, or inside each archive. `--name` does not apply. The helper does
+not check out or run either revision: whoever made the recordings decides how
+each revision is built and run.
+
+What differs from the gold-traces path:
 
 | | Gold traces | Ad-hoc recordings |
 | --- | --- | --- |
-| Recordings | git, at each revision | the two files |
+| Recordings | git, at each revision | the two files, directories or archives |
 | Manifest and `gold_traces/` | required | not read |
 | Captured values | sanitized tokens | real values |
 | `--base` / `--head` | the revisions compared | optional; only name the source diff |

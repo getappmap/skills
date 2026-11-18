@@ -61,8 +61,8 @@ reads only this folder.
 | File | What it is |
 | --- | --- |
 | `movie.json` | `{ "sentence", "title", "facts": [{"label","value"}], "risks": [{"lens": "Architecture" or "Performance" or "Security", "level": "high" or "medium" or "low" or "none", "says", "tradeoff", "evidence"}], "diagram": "automatic" or "hand-drawn", "skipped": [paths not covered] }` |
-| `movie.mp4` | The narrated video, 4:3 for desktops (`video-43-draft`) |
-| `movie-phone.mp4` | The same video, 9:16 for phones (`video-draft`) |
+| `movie.mp4` | The narrated video, 9:16, full screen on phones (`video-draft`) |
+| `movie-wide.mp4` | Optional: the same video, 4:3 for desktops (`video-43-draft`) |
 | `podcast.m4a` | The voice track, audio only |
 | `script.txt` | The narration as plain text |
 | `poster.png` | The diagram, used as the comment's picture and the podcast's still frame |
@@ -199,14 +199,32 @@ Rules:
 The script is what the voice reads; in Showcase Studio each scene's captions
 are its spoken lines. Write it before building slides.
 
-- About 250 words, under two minutes. The three reads get about 50 of them, the trace about 60.
-- One to three short sentences per scene: what is on screen, then what it means.
+Write for a viewer who knows nothing: a new developer on the project, or
+someone who has never seen the app. Four rules, every time:
+
+1. **Simplify.** One idea per sentence. Short words.
+2. **No jargon.** Say what a thing does, in everyday words, before or instead
+   of its name: "plain text" not "Markdown endpoint", "staff notes" not
+   "whispers" after the first mention, "the forum's usual rule" not
+   "`Roleable#whisperer?`". Code names go small on the slide, never in the
+   voice.
+3. **Start from the beginning.** First say what the app is and who uses it,
+   then what the change adds, then how it works, then what went wrong.
+4. **Assume no foreknowledge.** Introduce every person, screen and term the
+   first time it appears: "Alex runs the forum as an administrator".
+
+Then:
+
+- Under three minutes. Each caption is one short sentence, about 80
+  characters or fewer, so the subtitle fits in two lines on a phone.
 - Write for the ear. A listener with no picture must follow it: "the topic page
   shows two posts", never "as you can see here".
 - Numbers only from `results.json`.
-- No jargon a user would not know. When the diagram scene must name code, say
-  what it does first: "a new check asks whether Alex is in the reviewers group".
-- Spell it as it should sound: "pull request forty-three eight forty-three".
+- Say the dates: when the pull request merged, and, for any defect, whether it
+  is still in the code as of the day the movie was made.
+- Spell it for the voice in the voice input only ("pull request forty-three
+  eight forty-three", "App Map"); the on-screen caption keeps the normal
+  spelling.
 - The last scene's line is the sentence.
 
 ### 7. The sentence
@@ -222,25 +240,35 @@ Showcase `pr-<number>` in the movie library, screenshots and diagram under
 `assets/`. Use new file names on every re-cut (`step1-v2.png`): the studio
 caches assets by name.
 
+Make the phone version first. Reviewers watch on phones, and they need to see
+each screen and each interaction clearly, so every picture fills the whole
+screen:
+
 | Scene | Theme | Content |
 | --- | --- | --- |
-| intro | statement | The PR title in plain words, its number, one line on what it adds |
-| one per intended-use step | feature, `media: {frame: phone, fit: contain}` | The screenshot, whole |
-| how it's built | console, no title, `fit: contain` | One wide (16:9) diagram of the change |
-| three reads | statement | Architecture, Performance, Security, one line each |
-| one per defect step | feature, `media: {frame: phone, fit: contain}` | The screenshot for the user it hurts |
-| one per trace step | console, no title, `fit: contain` | One wide slide per step of the AppMap trace: the lanes across the top, only that step's calls, large type, the step's own heading inside the image |
-| outro | statement | The sentence |
+| intro | statement | What the app is, what the change adds, the pull request number, the merge date |
+| one per intended-use step | footage | The screenshot, full screen |
+| how it's built | footage | One portrait (1080 by 1920) diagram of the change, plain words first |
+| three reads | statement | Design, Speed, Security, one line each |
+| one per defect step | footage | The screenshot for the user it hurts, full screen |
+| one per trace step | footage | One portrait slide per step of the AppMap trace |
+| outro | statement | The sentence, and whether the defect is still live, with the date |
 
 Layout rules, learned the hard way:
 
-- Diagrams and traces are wide images on `console` slides. A tall diagram on a
-  `feature` slide shrinks to a strip beside the text and nobody can read it.
-  Draw them at 1600 by 900 or larger, with labels of 28 pixels or more.
-- Split a trace into steps of two to four calls each, one slide per step, about
-  ten seconds each. A whole trace on one slide flashes past.
-- `fit: contain` on every screenshot so nothing is cut off on a phone.
-- Leave the slide title off console slides; the image carries its own heading.
+- Every picture is `theme: footage` with
+  `media: {frame: full, fit: cover, align: top, motion: still, tiktok: {fit: fill, focus: top}}`,
+  so it fills the phone screen edge to edge. Never a phone frame inside the
+  phone, never letterboxing, never a column of text beside a picture.
+- Take browser screenshots at phone size (430 by 932, scale 3) and keep the
+  part that matters in the top 80%: the subtitle sits at the bottom.
+- Draw every diagram and trace step at 1080 by 1920, in plain words at 38
+  pixels or more, with the code names small (28 pixels) underneath for
+  developers. Leave the bottom fifth empty for the subtitles.
+- Split a trace into steps of two or three boxes each, one slide per step,
+  about ten seconds each. A whole trace on one slide flashes past.
+- A wide (4:3) cut for desktops is optional and comes second. If you make one,
+  draw its diagrams again at 1600 by 900 for `console` slides.
 
 Then:
 
@@ -259,9 +287,9 @@ Then:
 
 ### 9. Export the three forms
 
-1. `export` kind `video-43-draft` → `movie.mp4` (wide, for desktops), and kind
-   `video-draft` → `movie-phone.mp4` (tall 9:16, for phones). Full quality only
-   when asked.
+1. `export` kind `video-draft` → `movie.mp4` (tall 9:16, full screen on
+   phones). Optionally `video-43-draft` → `movie-wide.mp4` for desktops. Full
+   quality only when asked.
 2. The voice track `assets/<track>.m4a` → `podcast.m4a`.
 3. `export` kind `script` → `script.txt`.
 4. Copy the diagram to `poster.png`, write `movie.json`.
@@ -276,8 +304,8 @@ with the diagram as a still frame, so GitHub plays it inline.
 
 ## Done
 
-- One script of about 250 words, one voice.
-- A video and a podcast clip under two minutes, and the script, all saying the
+- One plain-language script a newcomer can follow, one voice.
+- A full-screen phone video and a podcast clip under three minutes, and the script, all saying the
   same thing.
 - One finding, or "none" with its check named, for each of the three lenses.
 - `results.json`, the diagram, the screenshots and the script agree.

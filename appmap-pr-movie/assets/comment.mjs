@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build the PR comment for a PR movie from the skill's output folder.
 //
-//   node comment.mjs <movie-dir> <video-url> <podcast-url> <poster-url> [<phone-video-url>]
+//   node comment.mjs <movie-dir> <video-url> <podcast-url> <poster-url> [<wide-video-url>]
 //
 // Prints Markdown to stdout. Any URL may be "" when that form was not made;
 // its link is then left out and the reason from movie.json "missing" shown.
@@ -21,7 +21,7 @@ export function buildComment({ movie, script, videoUrl, podcastUrl, posterUrl, p
   }
   const links = [];
   if (videoUrl) links.push(`▶️ [Watch](${videoUrl})`);
-  if (phoneUrl) links.push(`📱 [Watch on a phone](${phoneUrl})`);
+  if (phoneUrl) links.push(`🖥️ [Wide version](${phoneUrl})`);
   if (podcastUrl) links.push(`🎧 [Listen](${podcastUrl})`);
   if (script) links.push("📄 Read (below)");
   if (links.length) lines.push(links.join(" · "), "");

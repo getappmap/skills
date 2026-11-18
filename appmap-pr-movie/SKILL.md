@@ -30,8 +30,10 @@ in this order:
    Many people opening AI-written pull requests have none of those three on
    their team. The movie brings all three.
 4. **What it surfaced.** Any defect, shown in the browser for the user it
-   hurts, then the AppMap trace of that request, one step per slide, so a
-   viewer can follow each call. When nothing surfaced, say what was checked.
+   hurts. Then where the data comes from (which tests ran, before and after,
+   against real services), then the AppMap trace of that request, one step per
+   slide, so a viewer can follow each call, then the review's verdict and the
+   fix. When nothing surfaced, say what was checked.
 5. **The sentence.** One line saying what changed, in words a user would use.
    No slogan or call to action after it.
 
@@ -243,7 +245,34 @@ Then:
 - Spell it for the voice in the voice input only ("pull request forty-three
   eight forty-three", "App Map"); the on-screen caption keeps the normal
   spelling.
-- The last scene's line is the sentence.
+- The last scene's line is the sentence, unless the "how this was made"
+  ending follows it.
+
+#### The standard script
+
+Every movie follows this script, scene by scene. Fill the brackets from the
+review and `results.json`; keep the shape. Each line is one caption. Leave out
+a scene only when its row says so.
+
+| # | Scene | Theme | Picture | Lines (one caption each) |
+| --- | --- | --- | --- | --- |
+| 1 | intro | statement | Title: "[Project] pull request [number]". Support: "Merged [date] · [Still live / Fixed] as of [today]" | "[Project] is [what the app is, in one plain sentence]." · "[Who uses it and the one term the viewer needs, introduced]." · "This change adds [the new behavior, in a user's words]." · "It was merged on [date]." |
+| 2 | one per intended-use step | footage | The screenshot, full screen | "Here is [the screen], [what is new on it]." · "[How a person gets there]." |
+| 3 | the right user, working | footage | The screenshot for a user the change is meant for | "Here is [the screen] for [person]." · "[Person] is [their role]. [They see X]. That's correct." |
+| 4 | other ways in (skip if none) | statement | Title: what else the change opens up | One or two lines on any other route to the same behavior |
+| 5 | how it's built | footage | The portrait design diagram | "Here is how it's built. [Step one] and [the decision it makes]." · "[The usual parts that run]. Then new code [does the new thing]." · "[The riskiest part] does one thing differently. [What it does]." |
+| 6 | three quick reviews | statement | Title: "Three quick reviews". Support: "Design · Speed · Security" | "Design: [one sentence, with its tradeoff]." · "Speed: [one sentence, with its cost]." · "Security: [one sentence: what leaks or does not, and the real risk]." |
+| 7 | one per defect step (skip if none) | footage | The screenshot for the user it hurts | "And [it goes wrong]. [Person] is [role], but [the condition]." · "[What the old screen shows them]." then "In the new [view], [person] sees [the difference]." |
+| 8 | where the data comes from | footage | The data slide | "Here is where the data comes from." · "AppMap recorded [the project's own tests], plus [N] new test cases written for this review." · "They ran before and after the change, against a real database and cache. Nothing was faked." |
+| 9 | one per trace step | footage | One trace slide per step | Step 1: "AppMap recorded what the code did, step by step." · "First, [the usual rule] asks: [question]? [Answer]." · "[What that loads]." Next steps: "Next, [the new code] asks its own question: [question]?" · "[The answer]. So [the result]." Last step: "[Old view shows X]. [New view shows Y]." · "Same person, two rules, two answers." |
+| 10 | the review's verdict (skip if nothing surfaced) | statement | Title: "What the review says" | "AppMap's review rates this [level]. [What it does or does not expose]." · "[Whether it looks deliberate, and the evidence]." · "The fix is simple: [the fix, in plain words]." |
+| 11 | outro | statement | Title: "In one sentence". Support: "[Still live / Fixed] in [project] as of [today]" | "This change adds [what works]." · "And [the one defect, in a user's words]." · "As of [today], this bug is still live in [project]." (or "fixed in [commit]") |
+| 12 | how this was made (optional) | footage | Two slides with the eight steps | "Here is how this movie was made, automatically, for every pull request." then one line per step |
+
+When nothing surfaced, scenes 7, 9 and 10 become one statement scene: "AppMap
+checked [paths]. Nothing changed for [users]." and scene 8 still says where the
+data came from. Scene 8 is never left out: a viewer trusts the trace only once
+they know it came from real runs.
 
 ### 7. The sentence
 
@@ -269,17 +298,32 @@ screen:
 | how it's built | footage | One portrait (1080 by 1920) diagram of the change, plain words first |
 | three reads | statement | Design, Speed, Security, one line each |
 | one per defect step | footage | The screenshot for the user it hurts, full screen |
+| where the data comes from | footage | One portrait slide: the project's tests, the new test cases, run before and after, real database and cache |
 | one per trace step | footage | One portrait slide per step of the AppMap trace |
+| the review's verdict | statement | The level, whether it looks deliberate, the fix |
 | outro | statement | The sentence, and whether the defect is still live, with the date |
 
-Layout rules, learned the hard way:
+The scenes and their lines are the standard script in step 6.
+
+Layout rules for maximum readability, learned the hard way:
 
 - Every picture is `theme: footage` with
-  `media: {frame: full, fit: cover, align: top, motion: still, tiktok: {fit: fill, focus: top}}`,
+  `media: {frame: full, align: top, motion: still, tiktok: {fit: fill, focus: top}}`,
   so it fills the phone screen edge to edge. Never a phone frame inside the
-  phone, never letterboxing, never a column of text beside a picture.
+  phone, never a column of text beside a picture.
+- Browser screenshots use `fit: cover`. Drawn slides (the design, the data
+  slide, the trace steps, the "how this was made" steps) use `fit: contain`:
+  the stage is not exactly 9:16, and cover crops their sides.
 - Take browser screenshots at phone size (430 by 932, scale 3) and keep the
   part that matters in the top 80%: the subtitle sits at the bottom.
+- Plain-text or code screens: set the font to at least 27 pixels before the
+  screenshot (430 wide at scale 3), so every line reads on a phone without
+  zooming. Default 13 or 14 pixel text is unreadable in the movie.
+- One idea per slide. A slide holds at most four cards; each card has a bold
+  plain-words line (46 pixels) and one short explanation (38 pixels).
+- Color carries one meaning across the whole movie: green is what works as
+  intended, amber is the new or risky part, red is what goes wrong, blue is
+  neutral new parts. Never color alone: every card also says it in words.
 - Draw every diagram and trace step at 1080 by 1920, in plain words at 38
   pixels or more, with the code names small (28 pixels) underneath for
   developers. Leave the bottom fifth empty for the subtitles.

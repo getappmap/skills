@@ -1,0 +1,221 @@
+{
+ "actors": [
+  {
+   "id": "package:bank/transfers",
+   "name": "transfers",
+   "order": 1000
+  },
+  {
+   "id": "package:bank/accounts",
+   "name": "accounts",
+   "order": 1000
+  },
+  {
+   "id": "package:bank/ledger",
+   "name": "ledger",
+   "order": 1000
+  },
+  {
+   "id": "database:Database",
+   "name": "Database",
+   "order": 4000
+  }
+ ],
+ "rootActions": [
+  {
+   "nodeType": 3,
+   "callee": "package:bank/transfers",
+   "name": "create_transfer",
+   "static": true,
+   "stableProperties": {
+    "event_type": "function",
+    "id": "create_transfer",
+    "raises_exception": false
+   },
+   "returnValue": {
+    "raisesException": false
+   },
+   "eventIds": [
+    13
+   ],
+   "children": [
+    {
+     "nodeType": 3,
+     "callee": "package:bank/accounts",
+     "name": "find_account",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "find_account",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      2
+     ],
+     "children": [
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "SELECT accounts.* FROM accounts WHERE accounts.id = %s",
+       "children": [],
+       "eventIds": [
+        1
+       ],
+       "caller": "package:bank/accounts"
+      }
+     ],
+     "caller": "package:bank/transfers"
+    },
+    {
+     "nodeType": 3,
+     "callee": "package:bank/accounts",
+     "name": "authorize_owner",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "authorize_owner",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      4
+     ],
+     "children": [
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "SELECT account_owners.* FROM account_owners WHERE account_id = %s",
+       "children": [],
+       "eventIds": [
+        3
+       ],
+       "caller": "package:bank/accounts",
+       "diffMode": 1
+      }
+     ],
+     "caller": "package:bank/transfers",
+     "diffMode": 1
+    },
+    {
+     "nodeType": 3,
+     "callee": "package:bank/accounts",
+     "name": "has_funds",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "has_funds",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      5
+     ],
+     "children": [],
+     "caller": "package:bank/transfers"
+    },
+    {
+     "nodeType": 3,
+     "callee": "package:bank/ledger",
+     "name": "post_entries",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "post_entries",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      10
+     ],
+     "children": [
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "SELECT accounts.balance FROM accounts WHERE accounts.id = %s",
+       "children": [],
+       "eventIds": [
+        6
+       ],
+       "caller": "package:bank/ledger",
+       "diffMode": 2
+      },
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "SELECT accounts.* FROM accounts WHERE accounts.id = %s FOR UPDATE",
+       "children": [],
+       "eventIds": [
+        7
+       ],
+       "caller": "package:bank/ledger",
+       "diffMode": 1
+      },
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "-- 2 times\nINSERT INTO ledger_entries (account_id, amount) VALUES (%s, %s)",
+       "children": [],
+       "eventIds": [
+        8
+       ],
+       "caller": "package:bank/ledger"
+      },
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "-- 2 times\nUPDATE accounts SET balance = %s WHERE accounts.id = %s",
+       "children": [],
+       "eventIds": [
+        9
+       ],
+       "caller": "package:bank/ledger",
+       "diffMode": 3
+      }
+     ],
+     "caller": "package:bank/transfers",
+     "diffMode": 3
+    },
+    {
+     "nodeType": 3,
+     "callee": "package:bank/transfers",
+     "name": "notify_customer",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "notify_customer",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      11
+     ],
+     "children": [],
+     "caller": "package:bank/transfers",
+     "diffMode": 4
+    },
+    {
+     "nodeType": 6,
+     "callee": "database:Database",
+     "query": "INSERT INTO transfers (source_id, target_id, amount) VALUES (%s, %s, %s)",
+     "children": [],
+     "eventIds": [
+      12
+     ],
+     "caller": "package:bank/transfers"
+    }
+   ],
+   "diffMode": 3
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+# Showcase Studio library settings.
+#
+# This file marks this folder as a library of showcases: each showcase is
+# a folder beside it, with its own showcase.yaml. Settings go below;
+# remove the # to turn one on.
+#
+# show_in_recent: false   # keep this folder out of File > Open Recent
+# export_dir: exports      # put exports in this folder (relative to the
+#                          # library, or absolute) instead of ~/Downloads
+# aws_profile: ${USER}     # the AWS profile that makes the synthesized
+#                          # voiceovers (Polly). ${NAME} is an environment
+#                          # variable: ${USER} is the login name.
+# aws_region: us-east-1    # the region, when the profile has none set

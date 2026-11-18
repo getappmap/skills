@@ -1,0 +1,98 @@
+{
+ "title": "Moving money out of someone else's account",
+ "subtitle": "AppMap trace of test_transfer_debits_source_account at HEAD 4f2c9ae · behind the improper authorization finding (HIGH)",
+ "pageTitle": "Transfer Authorization Trace",
+ "lanes": [
+  {
+   "id": "app",
+   "name": "Customer B's app",
+   "sub": "not in the trace"
+  }
+ ],
+ "rootLane": "app",
+ "rootQueryLane": "package:bank/transfers",
+ "laneLabels": {
+  "package:bank/transfers": {
+   "sub": "transfers.py"
+  },
+  "package:bank/accounts": {
+   "sub": "accounts.py"
+  },
+  "package:bank/ledger": {
+   "sub": "ledger.py"
+  }
+ },
+ "hide": [
+  "current_customer"
+ ],
+ "collapse": [
+  "notify_customer"
+ ],
+ "setup": {
+  "text": "test setup: customers A and B, one account each, B signed in"
+ },
+ "steps": [
+  {
+   "at": "create_transfer",
+   "heading": "2 · B submits the transfer"
+  },
+  {
+   "at": "post_entries",
+   "heading": "3 · The money moves"
+  },
+  {
+   "at": "sql:SELECT accounts.balance",
+   "heading": "4 · The test re-reads A's balance"
+  }
+ ],
+ "notes": [
+  {
+   "before": "create_transfer",
+   "heading": "1 · B's app builds the request",
+   "lane": "app",
+   "kind": "client",
+   "lines": [
+    {
+     "text": "POST /transfers",
+     "mono": true
+    },
+    {
+     "text": "source: A's account, $250",
+     "mono": true
+    },
+    {
+     "text": "→ B can name any account",
+     "bold": true
+    }
+   ]
+  },
+  {
+   "after": "find_account",
+   "plain": true,
+   "kind": "info",
+   "lane": "package:bank/ledger",
+   "lines": [
+    "found · owner is Customer A"
+   ]
+  },
+  {
+   "after": "has_funds",
+   "kind": "error",
+   "mono": true,
+   "lane": "package:bank/accounts",
+   "lines": [
+    "has_funds(source, 250)   transfers.py:48",
+    "# source.owner_id is never checked"
+   ]
+  },
+  {
+   "after": "sql:SELECT accounts.balance",
+   "plain": true,
+   "kind": "error",
+   "lines": [
+    "A's balance is down $250 · B never owned the account"
+   ]
+  }
+ ],
+ "footer": "Calls and SQL are from the trace. Dashed lanes and boxes are drawn from the source."
+}

@@ -1,0 +1,29 @@
+{
+ "title": "What the fix changed in a transfer",
+ "subtitle": "Gold trace test_transfer_debits_source_account · BASE 4f2c9ae → HEAD 9d1e7b3",
+ "pageTitle": "Transfer Gold Trace Diff",
+ "rootLane": "test",
+ "laneLabels": {
+  "package:bank/transfers": {
+   "sub": "transfers.py"
+  },
+  "package:bank/accounts": {
+   "sub": "accounts.py"
+  },
+  "package:bank/ledger": {
+   "sub": "ledger.py"
+  }
+ },
+ "notes": [
+  {
+   "after": "authorize_owner",
+   "plain": true,
+   "kind": "ok",
+   "lane": "package:bank/ledger",
+   "lines": [
+    "new: the owner is checked before any money moves"
+   ]
+  }
+ ],
+ "footer": "Every step shown differs between the two traces, or contains one that does."
+}

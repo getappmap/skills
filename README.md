@@ -10,6 +10,7 @@ directory is a self-contained skill (a `SKILL.md` the agent reads, plus any asse
 | [`appmap-gold-traces`](appmap-gold-traces/SKILL.md) | Maintain a committed baseline of curated recordings ("gold traces") and bless it as code evolves. |
 | [`appmap-review`](appmap-review/SKILL.md) | Diff a change's runtime behavior against the baseline, or between two recordings made by hand, and write an interpreted code review. |
 | [`appmap-analyze`](appmap-analyze/SKILL.md) **(beta)** | Runtime analysis, with or without an existing AppMap setup: record the code, write the missing scenario tests, query the recordings for bugs and design problems, and report them in the appmap-review format; or answer one question about runtime behavior with evidence. |
+| [`appmap-pr-movie`](appmap-pr-movie/SKILL.md) **(beta)** | Make a one-minute summary of a pull request as a narrated video, a podcast clip and a script, from a browser walkthrough and an AppMap diagram of what changed. |
 | [`appmap-setup`](appmap-setup/SKILL.md) | Get a repository recording AppMap data: config, one unit and one integration recording, noise exclusions, and the working record commands written into `gold_traces/manifest.yaml`. |
 | [`appmap-setup-review`](appmap-setup-review/SKILL.md) | Demonstrate a gold-trace review on an existing change: set up recording and gold traces on a BASE commit, replay onto HEAD, and run `appmap-review` between them. |
 

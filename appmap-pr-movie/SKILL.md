@@ -40,7 +40,8 @@ reads only this folder.
 | File | What it is |
 | --- | --- |
 | `movie.json` | `{ "sentence", "title", "facts": [{"label","value"}], "risks": [{"lens": "Architecture" or "Performance" or "Security", "level": "high" or "medium" or "low" or "none", "says", "tradeoff", "evidence"}], "diagram": "automatic" or "hand-drawn", "skipped": [paths not covered] }` |
-| `movie.mp4` | The narrated video, 4:3 (`video-43-draft`) |
+| `movie.mp4` | The narrated video, 4:3 for desktops (`video-43-draft`) |
+| `movie-phone.mp4` | The same video, 9:16 for phones (`video-draft`) |
 | `podcast.m4a` | The voice track, audio only |
 | `script.txt` | The narration as plain text |
 | `poster.png` | The diagram, used as the comment's picture and the podcast's still frame |
@@ -194,7 +195,9 @@ caches assets by name.
 
 ### 9. Export the three forms
 
-1. `export` kind `video-43-draft` → `movie.mp4`. Full quality only when asked.
+1. `export` kind `video-43-draft` → `movie.mp4` (wide, for desktops), and kind
+   `video-draft` → `movie-phone.mp4` (tall 9:16, for phones). Full quality only
+   when asked.
 2. The voice track `assets/<track>.m4a` → `podcast.m4a`.
 3. `export` kind `script` → `script.txt`.
 4. Copy the diagram to `poster.png`, write `movie.json`.

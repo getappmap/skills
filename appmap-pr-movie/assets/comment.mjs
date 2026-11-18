@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build the PR comment for a PR movie from the skill's output folder.
 //
-//   node comment.mjs <movie-dir> <video-url> <podcast-url> <poster-url>
+//   node comment.mjs <movie-dir> <video-url> <podcast-url> <poster-url> [<phone-video-url>]
 //
 // Prints Markdown to stdout. Any URL may be "" when that form was not made;
 // its link is then left out and the reason from movie.json "missing" shown.
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 export const MARKER = "<!-- appmap-pr-movie -->";
 
-export function buildComment({ movie, script, videoUrl, podcastUrl, posterUrl }) {
+export function buildComment({ movie, script, videoUrl, podcastUrl, posterUrl, phoneUrl }) {
   const lines = [MARKER, ""];
   lines.push(`### 🎬 ${movie.title || "What this pull request does"}`, "");
   if (movie.sentence) lines.push(`**${movie.sentence}**`, "");
@@ -21,6 +21,7 @@ export function buildComment({ movie, script, videoUrl, podcastUrl, posterUrl })
   }
   const links = [];
   if (videoUrl) links.push(`▶️ [Watch](${videoUrl})`);
+  if (phoneUrl) links.push(`📱 [Watch on a phone](${phoneUrl})`);
   if (podcastUrl) links.push(`🎧 [Listen](${podcastUrl})`);
   if (script) links.push("📄 Read (below)");
   if (links.length) lines.push(links.join(" · "), "");
@@ -58,7 +59,7 @@ function cell(v) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [dir, videoUrl = "", podcastUrl = "", posterUrl = ""] = process.argv.slice(2);
+  const [dir, videoUrl = "", podcastUrl = "", posterUrl = "", phoneUrl = ""] = process.argv.slice(2);
   if (!dir) {
     console.error("usage: comment.mjs <movie-dir> <video-url> <podcast-url> <poster-url>");
     process.exit(2);
@@ -66,5 +67,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const movie = JSON.parse(readFileSync(path.join(dir, "movie.json"), "utf8"));
   const scriptPath = path.join(dir, "script.txt");
   const script = existsSync(scriptPath) ? readFileSync(scriptPath, "utf8") : "";
-  process.stdout.write(buildComment({ movie, script, videoUrl, podcastUrl, posterUrl }));
+  process.stdout.write(buildComment({ movie, script, videoUrl, podcastUrl, posterUrl, phoneUrl }));
 }

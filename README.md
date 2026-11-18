@@ -9,6 +9,8 @@ directory is a self-contained skill (a `SKILL.md` the agent reads, plus any asse
 | [`appmap-config`](appmap-config/SKILL.md) | Configure what gets recorded: `appmap.yml` (packages, exclude, shallow, output dir) and function labels, per language. |
 | [`appmap-gold-traces`](appmap-gold-traces/SKILL.md) | Maintain a committed baseline of curated recordings ("gold traces") and bless it as code evolves. |
 | [`appmap-review`](appmap-review/SKILL.md) | Diff a change's runtime behavior against the baseline, or between two recordings made by hand, and write an interpreted code review. |
+| [`appmap-diagram`](appmap-diagram/SKILL.md) | Draw a focused, annotated sequence diagram from a recording: the code path behind a review finding, or what a change did to a trace. |
+| [`appmap-archive`](appmap-archive/SKILL.md) | Package recordings as an AppMap archive without changing them, and hand two revisions' recordings to the skills that compare them. The skills do not run the revisions; the caller does. |
 | [`appmap-analyze`](appmap-analyze/SKILL.md) **(beta)** | Runtime analysis, with or without an existing AppMap setup: record the code, write the missing scenario tests, query the recordings for bugs and design problems, and report them in the appmap-review format; or answer one question about runtime behavior with evidence. |
 | [`appmap-setup`](appmap-setup/SKILL.md) | Get a repository recording AppMap data: config, one unit and one integration recording, noise exclusions, and the working record commands written into `gold_traces/manifest.yaml`. |
 | [`appmap-setup-review`](appmap-setup-review/SKILL.md) | Demonstrate a gold-trace review on an existing change: set up recording and gold traces on a BASE commit, replay onto HEAD, and run `appmap-review` between them. |
@@ -24,7 +26,7 @@ repository already has:
 | The repository has | Use |
 | --- | --- |
 | Gold traces (`gold_traces/`) | `appmap-review`, comparing the two revisions' gold traces. |
-| One recording of the same scenario on each branch, made by hand | `appmap-review`, ad-hoc mode. |
+| Recordings of the same scenarios on each branch, made by hand or in CI: one file, a directory, or an archive per side | `appmap-review`, ad-hoc mode. `appmap-archive` packages a side as one file. |
 | Nothing yet, and you want a lasting baseline for future reviews | `appmap-setup-review`: sets up gold traces on the base, then reviews. |
 | Nothing yet, and you want the bugs found now | `appmap-analyze`: writes scenario tests, records both revisions, and reports findings. |
 

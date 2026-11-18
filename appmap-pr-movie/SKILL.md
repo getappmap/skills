@@ -119,6 +119,22 @@ recorded requests, the diagram scene says "No change in recorded behavior".
 
 ## Steps
 
+### 0. Review the branch first
+
+The movie illustrates a review; it does not replace one. Before anything else,
+run the branch review and keep its report beside the movie:
+
+- **appmap-review** when the repository has gold traces, or when you have one
+  recording of the same scenario on each side.
+- **appmap-analyze** when it has neither: it writes the scenario tests the
+  suite is missing, records base and head, and reports findings.
+
+Every finding in that report becomes part of the movie: the three reads (step
+5) draw from it, each defect gets its own browser steps and trace steps, and
+the diagram skill (step 4) draws one picture per finding. A finding the movie
+cannot show in a browser still gets a diagram slide and a line in the script.
+The movie never states a finding the review did not make.
+
 ### 1. Pick the path
 
 From the diff and the PR description, write down:
@@ -156,7 +172,9 @@ Run it twice. If the runs disagree, fix the flake before going on.
 Record the same requests on base and head from the same checkout path (see
 **appmap-analyze**, Phase 3). Then draw:
 
-- If the AppMap trace-diagram skill is installed, use it.
+- Use the AppMap trace-diagram skill when it is installed. It draws the
+  integrated diagram of what changed and one diagram per finding from step 0;
+  use those as the movie's design and trace slides.
 - Otherwise: `appmap sequence-diagram --format json` on each recording, then
   `appmap sequence-diagram-diff <base> <head>`, and render the request on the
   path. Set `"diagram": "hand-drawn"` in `movie.json` if you laid it out

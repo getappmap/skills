@@ -17,19 +17,40 @@ One script feeds three forms:
 | Podcast clip | people who listen | the same voice track, audio only |
 | Written script | people who read | the same words, as text |
 
-The story is always three parts, in this order:
+The movie reviews the whole change first, the way a good reviewer would, and
+only then shows what it found. Never open on the defect. The story is always
+in this order:
 
-1. **What the user sees.** A browser walks the path the change touches and
-   screenshots each step.
-2. **What the code did.** One AppMap sequence diagram of that request, base
-   against head, with the new or changed calls marked.
-3. **Three risks, one sentence each.** What an architect, a performance or
-   DevOps engineer, and a security reviewer would each say about this change.
+1. **What the change adds.** The browser uses the new behavior as intended,
+   for a user it is meant for, and screenshots each step.
+2. **How it's built.** One wide diagram of the parts the change adds or
+   touches, with the riskiest part marked.
+3. **Three reads, one sentence each.** What an architect, a performance or
+   DevOps engineer, and a security reviewer would each say, with the tradeoff.
    Many people opening AI-written pull requests have none of those three on
    their team. The movie brings all three.
-4. **The sentence.** One line saying what changed, in words a user would use.
+4. **What it surfaced.** Any defect, shown in the browser for the user it
+   hurts, then the AppMap trace of that request, one step per slide, so a
+   viewer can follow each call. When nothing surfaced, say what was checked.
+5. **The sentence.** One line saying what changed, in words a user would use.
+   No slogan or call to action after it.
 
 The reviewer attaches nothing and runs nothing.
+
+## Where it runs
+
+The movie must not depend on one person's laptop. Showcase Studio is a Node
+app: React slides, Chrome driven by Playwright for frames, ffmpeg to encode,
+and AWS Polly for the voice. All of it runs headless.
+
+| Where | When | How |
+| --- | --- | --- |
+| CI, on every push | The default. Every pull request, no laptop involved | `getappmap/review-action/movie` (GitHub Actions). A Bitbucket Pipelines step runs the same scripts. Installs Showcase Studio, runs this skill with Claude Code headless, exports, uploads, comments |
+| A hosted render service | Later, so a team installs nothing but the GitHub or Bitbucket app | The CI step sends the folder from the output contract (script, screenshots, diagrams) to the service and gets back links. Same export command inside a container |
+| A developer's machine | Optional preview before pushing | Showcase Studio through its MCP tools |
+
+The skill's steps and the output contract are the same in all three. Only
+the render and upload step moves.
 
 ## Output contract
 
@@ -178,7 +199,7 @@ Rules:
 The script is what the voice reads; in Showcase Studio each scene's captions
 are its spoken lines. Write it before building slides.
 
-- About 180 words, about 75 seconds. The risks scene gets about 50 of them.
+- About 250 words, under two minutes. The three reads get about 50 of them, the trace about 60.
 - One to three short sentences per scene: what is on screen, then what it means.
 - Write for the ear. A listener with no picture must follow it: "the topic page
   shows two posts", never "as you can see here".
@@ -203,21 +224,38 @@ caches assets by name.
 
 | Scene | Theme | Content |
 | --- | --- | --- |
-| intro | statement | The PR title in plain words, and its number |
-| one per browser step | feature, `media.frame: phone` | The screenshot |
-| control | feature, `media.frame: phone` | The control screen |
-| underneath | feature | The diagram |
-| risks | statement | Three short lines: Architecture, Performance, Security, each with its level |
+| intro | statement | The PR title in plain words, its number, one line on what it adds |
+| one per intended-use step | feature, `media: {frame: phone, fit: contain}` | The screenshot, whole |
+| how it's built | console, no title, `fit: contain` | One wide (16:9) diagram of the change |
+| three reads | statement | Architecture, Performance, Security, one line each |
+| one per defect step | feature, `media: {frame: phone, fit: contain}` | The screenshot for the user it hurts |
+| one per trace step | console, no title, `fit: contain` | One wide slide per step of the AppMap trace: the lanes across the top, only that step's calls, large type, the step's own heading inside the image |
 | outro | statement | The sentence |
 
+Layout rules, learned the hard way:
+
+- Diagrams and traces are wide images on `console` slides. A tall diagram on a
+  `feature` slide shrinks to a strip beside the text and nobody can read it.
+  Draw them at 1600 by 900 or larger, with labels of 28 pixels or more.
+- Split a trace into steps of two to four calls each, one slide per step, about
+  ten seconds each. A whole trace on one slide flashes past.
+- `fit: contain` on every screenshot so nothing is cut off on a phone.
+- Leave the slide title off console slides; the image carries its own heading.
+
+Then:
+
 1. Put the script into each scene's captions.
-2. Set `meta.voiceover` (`voice: Matthew`, `engine: generative`). The studio
-   builds the voice from the captions and times every scene to it. Never set
-   `durationMs` on a voiced showcase, and never call Polly or ffmpeg yourself
-   for the voice.
-3. `validate`, then `screenshot_slide` every scene and look: each screenshot
-   fills its frame, nothing that matters is cropped.
-4. Listen once. Respell any caption the voice says wrong.
+2. Voice it. Set `meta.voiceover` (for example `voice: Ruth`,
+   `engine: generative`) and the studio builds the voice from the captions and
+   times every scene to it. Never set `durationMs` on a voiced showcase. If the
+   studio has no voiceover support, make one clip per caption with a voice
+   whose license allows commercial use, join them with fixed silences, set
+   `meta.soundtrack: {src, sync: true}`, and pin each caption's and scene's
+   `durationMs` to its clip. Say which voice and license in `meta.notes`.
+3. Check the voice with speech-to-text (the studio's `transcribe`, or any
+   whisper) against the script. Respell for the voice only what it says wrong.
+4. `validate`, then `screenshot_slide` every scene and look: each picture
+   fits its frame, nothing that matters is cropped.
 
 ### 9. Export the three forms
 
@@ -238,8 +276,8 @@ with the diagram as a still frame, so GitHub plays it inline.
 
 ## Done
 
-- One script of about 180 words, one voice.
-- A video and a podcast clip of about 75 seconds, and the script, all saying the
+- One script of about 250 words, one voice.
+- A video and a podcast clip under two minutes, and the script, all saying the
   same thing.
 - One finding, or "none" with its check named, for each of the three lenses.
 - `results.json`, the diagram, the screenshots and the script agree.
@@ -272,6 +310,8 @@ with the diagram as a still frame, so GitHub plays it inline.
 - Security (low): it fails closed. Admins see less, not more, so nothing
   private leaks. The risk is trust: staff who rely on the Markdown view miss
   whispers they are meant to see.
-- Outro: "So the new Markdown view hides whispers from an admin outside the
-  whisper group, and the topic page shows them. Same topic, same admin, two
-  answers."
+- Order in the movie: Markdown lists and topics working for Maya, who is in
+  the whisper group; how the change is built; the three reads; then the
+  defect for Alex, an admin outside the group; then the trace in three steps.
+- Outro: "So this pull request adds Markdown views that work, and one rule
+  that hides whispers from admins outside the whisper group."

@@ -69,6 +69,24 @@ export function sequenceFromAppmap(appmapPath, cli = findCli(), expand = []) {
   return seq;
 }
 
+/** The diff of two recordings of one test, as the CLI's diff sequence JSON. Each side's diagram is
+ * made here, so `expand` applies to both. */
+export function diffFromAppmaps(basePath, headPath, cli = findCli(), expand = []) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "appmap-diagram-"));
+  const files = ["base", "head"].map((side, i) => {
+    const file = path.join(dir, `${side}.sequence.json`);
+    fs.writeFileSync(file, JSON.stringify(sequenceFromAppmap([basePath, headPath][i], cli, expand)));
+    return file;
+  });
+  const out = path.join(dir, "diff");
+  const r = spawnSync(cli, ["sequence-diagram-diff", "-f", "json", "--output-dir", out, ...files], { encoding: "utf8" });
+  const diff = path.join(out, "diff.json");
+  if (r.status !== 0 || !fs.existsSync(diff)) {
+    throw new Error(`${cli} sequence-diagram-diff failed (exit ${r.status}):\n${r.stderr || r.stdout}`);
+  }
+  return JSON.parse(fs.readFileSync(diff, "utf8"));
+}
+
 /** Re-emit a recording's events properly nested: each call's parent is the newest call still open
  * when it starts, a return closes its own call wherever that is, and HTTP server requests are
  * dropped (their children move up). */
@@ -141,7 +159,10 @@ export function sqlLabel(q, max = SQL_MAX) {
       .join(", ")}`;
   const sel = /^SELECT (.+?) FROM (\w+)(.*)$/i.exec(s);
   if (sel) {
-    const cols = sel[1].includes(",") ? `${sel[2]}.*` : sel[1];
+    // A list of columns is "<table>.*"; a function call (count, sum, coalesce) is what the query
+    // is for, so it stays, cut short.
+    const short = (t) => (t.length > 20 ? t.slice(0, 19).trimEnd() + "…" : t);
+    const cols = sel[1].includes("(") ? short(sel[1]) : sel[1].includes(",") ? `${sel[2]}.*` : sel[1];
     s = `SELECT ${cols} FROM ${sel[2]}${sel[3]}`;
   }
   s = s.replace(/%\((\w+)\)s(::[\w ]+)?/g, "…").replace(/\?/g, "…");
@@ -209,11 +230,112 @@ export function liftCalls(list, names) {
  * Pass 1 walks the actions and places everything vertically, with lanes as indexes;
  * pass 2 widens the gaps between lanes until every label fits, then resolves x.
  */
-export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
-  const hide = new Set(notes.hide || []);
-  const collapse = new Set(notes.collapse || []);
+/** "accept#2" -> ["accept", 2]; "accept" -> ["accept", null]. Only a trailing "#<digits>" counts,
+ * so a private method named "#flush" is still a name. */
+const splitAnchor = (anchor) => {
+  const m = /^(.*)#(\d+)$/.exec(String(anchor));
+  return m ? [m[1], Number(m[2])] : [String(anchor), null];
+};
+
+/**
+ * What every view of a trace shares: the actions after --changed-only and `lift`, the number of
+ * each call, and which calls the notes hide or collapse.
+ *
+ * Calls are numbered per name over the whole trace, in recorded order, whether or not they are
+ * drawn: "callTool#3" is the third call to callTool. So hiding a call never renumbers the rest,
+ * and the outline's numbers are the ones the notes use.
+ */
+export function prepare(seq, notes = {}) {
   if (notes.changedOnly) seq = { ...seq, rootActions: pruneUnchanged(seq.rootActions) };
   if (notes.lift?.length) seq = { ...seq, rootActions: liftCalls(seq.rootActions, new Set(notes.lift)) };
+  const baseMatches = (base, a) =>
+    base.startsWith("sql:")
+      ? a.nodeType === NODE_QUERY && splitCount(a.query).sql.includes(base.slice(4))
+      : a.nodeType === NODE_FUNCTION && a.name === base;
+  const numbers = new Map(); // anchor base -> Map(action -> its number)
+  const numbered = (base) => {
+    if (!numbers.has(base)) {
+      const found = new Map();
+      const visit = (list) => {
+        for (const a of list || []) {
+          if (baseMatches(base, a)) found.set(a, found.size + 1);
+          visit(a.children);
+        }
+      };
+      visit(seq.rootActions);
+      numbers.set(base, found);
+    }
+    return numbers.get(base);
+  };
+  const matches = (anchor, a) => {
+    const [base, nth] = splitAnchor(anchor);
+    return numbered(base).get(a) === (nth ?? 1);
+  };
+  // An entry of `hide` or `collapse` is a name (every call to it), "name#n" (that one call), or
+  // "sql:<text>" (every query containing the text; "sql:<text>#n" for one).
+  const named = (entries) => (a) =>
+    (a.nodeType === NODE_FUNCTION || a.nodeType === NODE_QUERY) &&
+    (entries || []).some((e) => {
+      const [base, nth] = splitAnchor(e);
+      return nth === null ? baseMatches(base, a) : matches(e, a);
+    });
+  return {
+    seq,
+    matches,
+    isHidden: named(notes.hide),
+    isCollapsed: named(notes.collapse),
+    /** [number, how many calls share the name] for a function call. */
+    numberOf: (a) => [numbered(a.name).get(a), numbered(a.name).size],
+  };
+}
+
+/** The trace as indented text: one line per call, with the lane it lands on and the number to
+ * use in an anchor. Hidden and collapsed calls are listed, marked, and not opened. */
+export function outline(seq, { notes = {}, depth = Infinity } = {}) {
+  const prep = prepare(seq, notes);
+  const lane = new Map(prep.seq.actors.map((a) => [a.id, notes.laneLabels?.[a.id]?.name || a.name]));
+  const mark = { 1: "+ ", 2: "- ", 3: "~ ", 4: "> " };
+  const count = (list) => (list || []).reduce((n, a) => n + 1 + count(a.children), 0);
+  const lines = [];
+  const walk = (list, level) => {
+    for (const a of list || []) {
+      const pad = "  ".repeat(level);
+      const diff = mark[a.diffMode] || "";
+      if (a.nodeType === NODE_LOOP) {
+        lines.push(`${pad}${diff}loop x${a.count}${level < depth ? "" : `  [not opened, ${count(a.children)} inside]`}`);
+        if (level < depth) walk(a.children, level + 1);
+        continue;
+      }
+      if (a.nodeType === NODE_QUERY) {
+        lines.push(`${pad}${diff}sql: ${sqlLabel(a.query, 70)}${prep.isHidden(a) ? "  [hidden]" : ""}`);
+        continue;
+      }
+      if (a.nodeType !== NODE_FUNCTION) {
+        lines.push(`${pad}${diff}${a.route || a.name || `node ${a.nodeType}`}`);
+        if (level < depth) walk(a.children, level + 1);
+        continue;
+      }
+      const [n, of] = prep.numberOf(a);
+      const inside = count(a.children);
+      const raises = a.returnValue?.raisesException || a.stableProperties?.raises_exception;
+      const state = prep.isHidden(a) ? "hidden" : prep.isCollapsed(a) ? "collapsed" : level >= depth && inside ? "not opened" : "";
+      const tail = [
+        a.callee && lane.has(a.callee) ? `-> ${lane.get(a.callee)}` : "",
+        raises ? "raises" : "",
+        state ? `[${state}${inside ? `, ${inside} inside` : ""}]` : "",
+      ].filter(Boolean);
+      lines.push(`${pad}${diff}${a.name}${of > 1 ? `#${n}` : ""}${tail.length ? "  " + tail.join("  ") : ""}`);
+      if (!state) walk(a.children, level + 1);
+    }
+  };
+  walk(prep.seq.rootActions, 0);
+  return lines;
+}
+
+export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
+  const prep = prepare(seq, notes);
+  seq = prep.seq;
+  const { matches, isHidden, isCollapsed } = prep;
 
   // Lanes: annotation lanes first (in the order given), then the recorded actors that something
   // in the picture actually calls.
@@ -222,10 +344,10 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
   const referenced = new Set();
   const collect = (list) => {
     for (const a of list || []) {
-      if (a.nodeType === NODE_FUNCTION && hide.has(a.name)) continue;
+      if (isHidden(a)) continue;
       if (a.callee) referenced.add(a.callee);
       if (a.caller) referenced.add(a.caller);
-      if (!(a.nodeType === NODE_FUNCTION && collapse.has(a.name))) collect(a.children);
+      if (!isCollapsed(a)) collect(a.children);
     }
   };
   collect(seq.rootActions);
@@ -269,24 +391,8 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
 
   // Anchors: "offer", "accept#2" (the second call named accept), "sql:SELECT contracts" (a query
   // whose text contains it; "#n" is the nth such query), "raise:accept" (the exception arrow of
-  // that call). Notes attach before / after / at the end of one; steps put a heading before one.
-  const seen = new Map(); // anchor base -> number of actions matched so far
-  const ordinal = new Map(); // action -> {base: its ordinal}
-  const baseMatches = (base, a) =>
-    base.startsWith("sql:")
-      ? a.nodeType === NODE_QUERY && splitCount(a.query).sql.includes(base.slice(4))
-      : a.nodeType === NODE_FUNCTION && a.name === base;
-  const matches = (anchor, a) => {
-    const [base, nth] = String(anchor).split("#");
-    if (!baseMatches(base, a)) return false;
-    const mine = ordinal.get(a) || {};
-    if (!(base in mine)) {
-      mine[base] = (seen.get(base) || 0) + 1;
-      seen.set(base, mine[base]);
-      ordinal.set(a, mine);
-    }
-    return Number(nth || 1) === mine[base];
-  };
+  // that call). Notes attach before / under / after / at the end of one; steps put a heading
+  // before one. `prepare` does the numbering.
   const notesAt = (where, a) => (notes.notes || []).filter((x) => x[where] && matches(x[where], a));
   const stepsAt = (a, prefix = "") =>
     (notes.steps || []).filter((x) => String(x.at).startsWith(prefix) && matches(String(x.at).slice(prefix.length), a));
@@ -294,21 +400,26 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
     ops.push({ k: "heading", y: y + 14, text });
     y += HEADING;
   };
-  const visible = (a) =>
-    !(a.nodeType === NODE_FUNCTION && hide.has(a.name)) &&
-    (a.nodeType !== NODE_LOOP || (a.children || []).some(visible));
+  const visible = (a) => !isHidden(a) && (a.nodeType !== NODE_LOOP || (a.children || []).some(visible));
 
   const ops = [];
   const used = new Set();
   let y = TOP;
   const laneDepth = new Map();
 
-  const addNote = (note, lane, depthX = null) => {
-    if (note.heading) heading(note.heading);
+  // `where` is the placement the note was given: before, under, after or end.
+  const addNote = (note, lane, where) => {
     const mono = note.mono ?? false;
     const lines = (note.lines || wrap(note.text || "", 44)).map((l) =>
       typeof l === "string" ? { text: l, mono } : { mono, ...l },
     );
+    // A heading on a `before` note is a step of its own (something that happens with no recorded
+    // call). Anywhere else it belongs to the box, so it is the box's first line.
+    if (note.heading && (where === "before" || note.plain)) heading(note.heading);
+    else if (note.heading) lines.unshift({ text: note.heading, bold: true });
+    // A box on a lane with calls still open starts to the right of their bars.
+    const openHere = lane != null ? laneDepth.get(lane) || 0 : 0;
+    const depthX = openHere > 0 ? openHere - 1 : null;
     if (note.plain) {
       // How many calls are open on each lane right now: an `end` note's own call is still open,
       // so centred text on that lane would cross its bars. The layout puts it beside them.
@@ -332,9 +443,14 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
   };
 
   // Queries that run before the first function call are setup: one band, not twenty arrows.
-  let actions = seq.rootActions;
+  // Calls the notes hide do not end the run: with the test's set-up call hidden, the queries
+  // around it are still set-up.
+  let actions = [...seq.rootActions];
   const lead = [];
-  while (actions.length && actions[0].nodeType === NODE_QUERY) lead.push(actions.shift());
+  while (actions.length && (actions[0].nodeType === NODE_QUERY || isHidden(actions[0]))) {
+    const first = actions.shift();
+    if (first.nodeType === NODE_QUERY && !isHidden(first)) lead.push(first);
+  }
   if (lead.length && notes.setup !== false) {
     const s = typeof notes.setup === "object" ? notes.setup : {};
     const lines = [{ text: s.text || `${lead.length} setup ${lead.length === 1 ? "query" : "queries"}`, mono: false }];
@@ -355,7 +471,7 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
 
       // Notes placed "before" an action come ahead of its step heading: the heading names the
       // action itself, so it sits directly above its arrow.
-      for (const nt of notesAt("before", a)) addNote(nt, noteLane(nt, callerLane));
+      for (const nt of notesAt("before", a)) addNote(nt, noteLane(nt, callerLane), "before");
       for (const st of stepsAt(a)) heading(st.heading);
 
       if (a.nodeType === NODE_LOOP) {
@@ -363,7 +479,7 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
         y += 20;
         const fromLane = callerLane;
         walk(a.children || [], callerLane, top);
-        ops.push({ k: "loop", y1: y0, y2: y, lane: fromLane, count: a.count });
+        ops.push({ k: "loop", y1: y0, y2: y, lane: fromLane, count: a.count, open: laneDepth.get(fromLane) || 0 });
         used.add("loop");
         y += 10;
         continue;
@@ -386,7 +502,8 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
         ops.push({ k: "arrow", y: y + 22, from, to, cls: "sql", diff });
         used.add("sql");
         y += ROW;
-        for (const nt of notesAt("after", a)) addNote(nt, noteLane(nt, nt.plain ? null : from));
+        for (const where of ["under", "after"])
+          for (const nt of notesAt(where, a)) addNote(nt, noteLane(nt, nt.plain ? null : from), where);
         continue;
       }
 
@@ -395,7 +512,11 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
       const from = callerLane;
       const name = a.nodeType === NODE_FUNCTION ? `${a.name}()` : a.route || a.name || `node ${a.nodeType}`;
       const fromCaller = (top || !a.caller) && notes.callers?.[a.name] ? L(notes.callers[a.name]) : from;
-      const style = fromCaller !== from || lanes[fromCaller].kind === "client" ? "client" : "call";
+      // Dashed means "not recorded". A call moved by `callers` onto the lane the recording names
+      // as its caller is still a recorded call.
+      const recordedCaller = a.caller ? laneIdx(a.caller) : -1;
+      const claimed = fromCaller !== from && fromCaller !== recordedCaller;
+      const style = claimed || lanes[fromCaller].kind === "client" ? "client" : "call";
       used.add(style);
       const depth = laneDepth.get(callee) || 0;
       let actTop;
@@ -412,8 +533,10 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
       const exc = (a.eventIds || []).map((id) => exceptions.get(id)).find(Boolean);
       const raises = a.returnValue?.raisesException || a.stableProperties?.raises_exception;
       laneDepth.set(callee, depth + 1);
-      if (!collapse.has(a.name)) walk(a.children || [], callee);
-      for (const nt of notesAt("end", a)) addNote(nt, noteLane(nt, callee), nt.lane == null ? depth : null);
+      // `under`: right below the call's arrow, before anything the call does.
+      for (const nt of notesAt("under", a)) addNote(nt, noteLane(nt, callee), "under");
+      if (!isCollapsed(a)) walk(a.children || [], callee);
+      for (const nt of notesAt("end", a)) addNote(nt, noteLane(nt, callee), "end");
       laneDepth.set(callee, depth);
       if (raises && fromCaller !== callee) {
         for (const st of stepsAt(a, "raise:")) heading(st.heading);
@@ -433,8 +556,10 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
         const actBottom = y + 22;
         ops.push({ k: "act", lane: callee, depth, y1: actTop, y2: actBottom, cls: "err" });
         y += ROW;
-        if (exc?.[0]?.message && notes.exceptionMessages !== false) {
-          addNote({ kind: "error", lines: wrap(`"${exc[0].message}"`, 34) }, Math.min(fromCaller, callee));
+        // A sanitized recording (a gold trace) holds a placeholder such as <v141>, not the message.
+        const message = exc?.[0]?.message;
+        if (message && !/^<v\d+>$/.test(message) && notes.exceptionMessages !== false) {
+          addNote({ kind: "error", lines: wrap(`"${message}"`, 34) }, Math.min(fromCaller, callee), "after");
         }
       } else {
         ops.push({
@@ -447,7 +572,7 @@ export function layout(seq, { notes = {}, exceptions = new Map() } = {}) {
         });
         y += 6;
       }
-      for (const nt of notesAt("after", a)) addNote(nt, noteLane(nt, nt.plain ? null : callee));
+      for (const nt of notesAt("after", a)) addNote(nt, noteLane(nt, nt.plain ? null : callee), "after");
     }
   };
   walk(actions, rootLane, true);
@@ -529,7 +654,8 @@ function resolveX({ lanes, ops, height, used, notes }) {
       p.w = Math.max(w, width - MARGIN - p.x);
       right(p.x + w);
     } else if (o.k === "loop") {
-      p.x = xs[o.lane] + 10;
+      // Clear of the bars of the calls open on this lane, so the "loop xN" label is not under one.
+      p.x = xs[o.lane] + Math.max(10, (o.open || 0) * 6 + 6);
     }
     placed.push(p);
   }
@@ -572,6 +698,20 @@ export function outside(model) {
   return textBoxes(model)
     .filter((b) => !(b.x1 >= 0 && b.x2 <= model.width))
     .map((b) => b.what);
+}
+
+/** Headings and notes drawn across the bar of an open call: [text, ...]. */
+export function barCrossings(model) {
+  const bars = model.ops.filter((o) => o.k === "act").map((o) => ({ x1: o.x, x2: o.x + 12, y1: o.y1, y2: o.y2 }));
+  const texts = [];
+  for (const o of model.ops) {
+    if (o.k === "heading")
+      texts.push({ what: o.text, x1: MARGIN, x2: MARGIN + textW(o.text, false) * 0.95, y1: o.y - 11, y2: o.y + 3 });
+    if (o.k === "note") texts.push({ what: o.lines[0].text, x1: o.x, x2: o.x + o.w, y1: o.y, y2: o.y + o.h });
+  }
+  return texts
+    .filter((t) => bars.some((b) => t.x1 < b.x2 && b.x1 < t.x2 && t.y1 < b.y2 && b.y1 < t.y2))
+    .map((t) => t.what);
 }
 
 export function overlaps(model) {
@@ -664,7 +804,7 @@ function drawSvg(model, notes) {
         s.push(`<rect x="${o.x}" y="${o.y}" width="${o.w}" height="${o.h}" rx="7" class="note note-${o.kind}"/>`);
         o.lines.forEach((l, i) =>
           s.push(
-            `<text x="${o.x + 12}" y="${o.y + 18 + i * NOTE_LINE}" class="t-note c-${o.kind}${l.mono ? " mono" : ""}${l.bold ? " bold" : ""}">${esc(l.text)}</text>`,
+            `<text x="${o.x + 12}" y="${o.y + 18 + i * NOTE_LINE}"${l.mono ? ' xml:space="preserve"' : ""} class="t-note c-${o.kind}${l.mono ? " mono" : ""}${l.bold ? " bold" : ""}">${esc(l.text)}</text>`,
           ),
         );
         break;
@@ -751,6 +891,7 @@ function parseArgs(argv) {
     const k = argv[i];
     if (k === "--help" || k === "-h") a.help = true;
     else if (k === "--changed-only") a["changed-only"] = true;
+    else if (k === "--outline") a.outline = true;
     else if (k === "--png") a.png = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "";
     else if (k.startsWith("--")) a[k.slice(2)] = argv[++i];
   }
@@ -758,8 +899,10 @@ function parseArgs(argv) {
 }
 
 const USAGE = `usage: render.mjs --appmap FILE.appmap.json [--sequence FILE.sequence.json]
+                  [--base-appmap FILE.appmap.json --head-appmap FILE.appmap.json]
                   [--notes notes.json] [--out page.html] [--png [page.png]]
-                  [--expand ID[,ID]] [--cli PATH] [--changed-only]
+                  [--playwright DIR] [--expand ID[,ID]] [--cli PATH] [--changed-only]
+                  [--outline [--depth N]]
 
 Draws one AppMap recording as a sequence diagram on a standalone HTML page.
 --appmap gives exception messages and runs the CLI for the sequence JSON;
@@ -767,18 +910,27 @@ Draws one AppMap recording as a sequence diagram on a standalone HTML page.
 --sequence uses an existing sequence JSON (also a diff/*.diff.sequence.json
 from appmap-review, whose added/removed/changed actions are coloured;
 --changed-only keeps just those and the calls above them).
---png also writes a picture of the page (needs Playwright in the current project).
+--base-appmap and --head-appmap compare two recordings of one test here, so
+--expand applies to the comparison too (a --sequence diff keeps the lanes it
+was made with).
+--outline prints the trace as indented text and draws nothing: each call, the
+lane it lands on, and its number for an anchor (name#n). --depth N stops N
+levels down.
+--png also writes a picture of the page. It needs Playwright, from the current
+project or from the one named by --playwright DIR.
 Prints the output path, and a warning for every pair of labels that overlap
 and every label that falls outside the picture.`;
 
 /** Screenshot the page's main element. Playwright is resolved from the working directory. */
-async function writePng(htmlPath, pngPath) {
+async function writePng(htmlPath, pngPath, from = process.cwd()) {
   const { createRequire } = await import("node:module");
   let chromium;
   try {
-    ({ chromium } = createRequire(path.join(process.cwd(), "x.js"))("playwright"));
+    ({ chromium } = createRequire(path.join(path.resolve(from), "x.js"))("playwright"));
   } catch {
-    throw new Error("--png needs Playwright: run from a project that has it, or npm i -D playwright");
+    throw new Error(
+      `--png needs Playwright, and ${path.resolve(from)} does not have it. Pass --playwright DIR with a project that does, or npm i -D playwright here.`,
+    );
   }
   const browser = await chromium.launch();
   try {
@@ -792,17 +944,37 @@ async function writePng(htmlPath, pngPath) {
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
-  if (args.help || (!args.appmap && !args.sequence)) {
+  const pair = args["base-appmap"] || args["head-appmap"];
+  if (pair && !(args["base-appmap"] && args["head-appmap"])) {
+    console.error("error: a comparison needs both --base-appmap and --head-appmap");
+    return 2;
+  }
+  if (args.help || (!args.appmap && !args.sequence && !pair)) {
     console.log(USAGE);
     return args.help ? 0 : 2;
   }
   const notes = args.notes ? JSON.parse(fs.readFileSync(args.notes, "utf8")) : {};
   const expand = [...(notes.expand || []), ...(args.expand ? args.expand.split(",") : [])];
-  const appmap = args.appmap ? JSON.parse(fs.readFileSync(args.appmap, "utf8")) : null;
+  // Exception messages come from the head recording when two are compared.
+  const appmapFile = args.appmap || args["head-appmap"];
+  const appmap = appmapFile ? JSON.parse(fs.readFileSync(appmapFile, "utf8")) : null;
+  const cli = args.cli || findCli();
+  if (args.sequence && expand.length) {
+    console.error(
+      "warning: --expand does not change a --sequence file's lanes; for a comparison with one lane per file, pass --base-appmap and --head-appmap",
+    );
+  }
   const seq = args.sequence
     ? JSON.parse(fs.readFileSync(args.sequence, "utf8"))
-    : sequenceFromAppmap(args.appmap, args.cli || findCli(), expand);
+    : pair
+      ? diffFromAppmaps(args["base-appmap"], args["head-appmap"], cli, expand)
+      : sequenceFromAppmap(args.appmap, cli, expand);
   if (args["changed-only"]) notes.changedOnly = true;
+  if (args.outline) {
+    const depth = args.depth === undefined ? Infinity : Number(args.depth);
+    console.log(outline(seq, { notes, depth }).join("\n"));
+    return 0;
+  }
   const model = layout(seq, { notes, exceptions: exceptionsByCall(appmap) });
   const meta = {
     name: appmap?.metadata?.name,
@@ -810,19 +982,26 @@ export async function main(argv = process.argv.slice(2)) {
     commit: appmap?.metadata?.git?.commit,
   };
   if (notes.test) meta.test = notes.test;
-  const base = (args.appmap || args.sequence).replace(/(\.diff)?(\.sequence)?(\.appmap)?\.json$/, "");
+  const base = (args.appmap || args.sequence || args["head-appmap"]).replace(/(\.diff)?(\.sequence)?(\.appmap)?\.json$/, "");
   const out = args.out || `${base}.trace.html`;
   fs.writeFileSync(out, renderHtml(model, notes, meta));
   console.log(out);
   const bad = overlaps(model);
   for (const [p, q] of bad) console.error(`warning: labels overlap: "${p}" and "${q}"`);
   for (const t of outside(model)) console.error(`warning: outside the picture: "${t}"`);
+  for (const t of barCrossings(model)) console.error(`warning: drawn across a call bar: "${t}"`);
   if (notes.cards?.length) {
     console.error("warning: `cards` in the notes are no longer drawn: put that text in the review report or your reply");
   }
   if (args.png !== undefined) {
     const png = args.png || out.replace(/\.html$/, "") + ".png";
-    await writePng(out, png);
+    try {
+      await writePng(out, png, args.playwright);
+    } catch (error) {
+      // The page is written; only the picture is missing.
+      console.error(`error: ${error.message}`);
+      return 1;
+    }
     console.log(png);
   }
   return 0;

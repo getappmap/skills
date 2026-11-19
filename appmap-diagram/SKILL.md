@@ -47,7 +47,9 @@ revision and hands both over (**appmap-archive**). Don't pick "the closest test"
 wrong code path is worse than none.
 
 **The revisions.** A trace records the commit it was made at (`metadata.git.commit`);
-check it is there before relying on it, and ask when it is not. For a change, you also
+check it is there before relying on it. A gold trace does not have it (it is removed
+when the trace is blessed): use the commit that last changed the trace file,
+`git log -1 --format=%h -- <trace file>`. Ask when neither gives one. For a change, you also
 need the base revision. You are given revisions, never a diff: the whole diff may be
 huge, and you only need the part this trace runs.
 
@@ -65,6 +67,17 @@ huge, and you only need the part this trace runs.
    into one lane per file. Use the package name as it appears in the recording's
    lanes (`package:content`, not `package:src/content`); the CLI ignores a name that
    matches nothing. For a comparison, see "Drawing a comparison".
+
+   A trace with hundreds of calls is unreadable as a first picture. Print it as text
+   instead, and choose from that:
+
+   ```sh
+   node "${CLAUDE_SKILL_DIR}/assets/render.mjs" --appmap <file.appmap.json> --outline [--depth 2]
+   ```
+
+   Each line is one call, the lane it lands on, and its number when the name is
+   called more than once (`callTool#3`). With `--notes` it marks what the notes
+   already hide or collapse.
 
 2. **Find the changed code this trace runs**, when there are two revisions:
 
@@ -107,13 +120,17 @@ huge, and you only need the part this trace runs.
    and line.
 
 6. **Fix every warning.** The renderer prints `warning: labels overlap: "x" and "y"`
-   for any two labels whose boxes meet, and `warning: outside the picture: "x"` for
-   text that would be cut off. Its text-width estimate is slightly wider than a
+   for any two labels whose boxes meet, `warning: outside the picture: "x"` for
+   text that would be cut off, and `warning: drawn across a call bar: "x"` for a step
+   heading or a note that runs over the bar of a call still open (shorten the
+   heading; give the note a `lane` further right). Its text-width estimate is slightly wider than a
    browser's, so no warning means none on screen. Usual fixes: hide a helper
    (`hide`), stop at a call (`collapse`), or move a note to its own step.
 
-7. **Look at it.** Add `--png` to write a picture of the page beside it (it uses
-   Playwright from the project you run it in) and view that. Then show the user.
+7. **Look at it.** Add `--png` to write a picture of the page beside it and view
+   that. It uses Playwright from the project you run it in; when that project has
+   none (a Python or Java project, say), add `--playwright <a project that has it>`.
+   Then show the user.
 
 Never edit the generated HTML by hand: change the notes and render again, so the next
 render keeps the fix.
@@ -133,13 +150,13 @@ JSON. Every field is optional.
 | `laneOrder` | Lane ids or names, left to right: `["test", "app"]`. Lanes not listed follow, in their usual order |
 | `lift` | Function names drawn as top-level calls wherever the recording nested them (see "Async recordings") |
 | `expand` | Package lanes to split into files, as `--expand`: `["package:server"]` |
-| `hide` | Function names left out, with everything under them |
-| `collapse` | Function names drawn, but not what they call |
-| `setup` | Band for the queries before the first call: `{"text": "…", "lines": ["…"]}`, or `false` to draw them as arrows |
+| `hide` | Calls left out, with everything under them: a function name (every call to it) or `name#n` (that one call). `sql:<text>` leaves out every query containing the text |
+| `collapse` | Calls drawn, but not what they call: a name, or `name#n` |
+| `setup` | Band for the queries before the first call that is drawn: `{"text": "…", "lines": ["…"]}`, or `false` to draw them as arrows. Hide the test's own set-up call and the queries around it join the band |
 | `steps` | Numbered headings: `[{"at": "<anchor>", "heading": "1 · …"}]` |
-| `notes` | Boxes: `{"before" \| "after" \| "end": "<anchor>", "lane": "…", "kind": "client \| error \| info \| ok", "lines": […], "mono": true, "plain": true, "heading": "…"}` |
+| `notes` | Boxes: `{"before" \| "under" \| "end" \| "after": "<anchor>", "lane": "…", "kind": "client \| error \| info \| ok", "lines": […], "mono": true, "plain": true, "heading": "…"}` |
 | `changedOnly` | Same as `--changed-only` |
-| `exceptionMessages` | `false` hides the message box under an exception arrow |
+| `exceptionMessages` | `false` hides the message box under an exception arrow. A gold trace's message is a placeholder (`<v141>`), and is never drawn |
 | `footer` | Replaces the footer line, or `false` |
 
 **Anchors** name a point in the recording:
@@ -147,16 +164,35 @@ JSON. Every field is optional.
 | Anchor | Means |
 | --- | --- |
 | `accept` | the first call to a function named `accept` |
-| `game_now#2` | the second call to `game_now` (count them in the plain render) |
+| `game_now#2` | the second call to `game_now` in the trace (`--outline` prints the numbers) |
 | `sql:SELECT contracts` | the first query whose text contains that; `#n` works here too |
 | `raise:accept` | the exception arrow leaving `accept` (steps only) |
 
-`before` puts a note ahead of the anchor's step heading, `after` puts it under the
-anchor's arrow, and `end` puts it inside the call, after its children and before it
-returns or raises. That is where a note about what the call did before returning goes. A line
-in `lines` is a string, or `{"text", "mono", "bold"}`. A box note with no `lane` sits
-on the lane that was called (for `before`, the caller's); a `plain` note placed `after`
-with no `lane` is centred across the picture. Plain text that would land on a lane with
+Calls are numbered over the whole trace, in recorded order, whether or not they are
+drawn. Hiding a call does not renumber the others.
+
+Where a note goes, for a call that makes calls of its own:
+
+```
+            ◄── before   (ahead of the step heading)
+1 · heading
+──► call()
+            ◄── under    (below the arrow, before anything the call does)
+    ──► child()
+            ◄── end      (after its children, before it returns or raises)
+◄── raises
+            ◄── after    (once the call is over)
+```
+
+For a call with no children, `under`, `end` and `after` land in the same place. `end`
+is where a note about what the call decided goes.
+
+A `heading` on a `before` note is a step of its own, for something that happens with
+no recorded call. On any other note it is the box's bold first line: use it for the
+file and line the note quotes. A line in `lines` is a string, or `{"text", "mono",
+"bold"}`. A box note with no `lane` sits on the lane that was called (for `before`,
+the caller's), to the right of the bars of any calls still open there; a `plain` note
+placed `after` with no `lane` is centred across the picture. Plain text that would land on a lane with
 calls still open (an `end` note, say) is drawn beside the bars instead of across them.
 
 `assets/fixtures/paused-accept.notes.json` is a complete example: a client lane, four
@@ -199,6 +235,21 @@ node "${CLAUDE_SKILL_DIR}/assets/render.mjs" --changed-only --sequence <diff.jso
 is usually thousands of pixels tall. Added steps are green, removed are red and struck
 through, changed are amber, moved are teal.
 
+That diff has one lane per package unless the compare was run with `--expand`, and
+the renderer cannot split it afterwards. When the code is in one package, every
+changed call is then a self-call on one lane. For one lane per file, run the compare
+again with `--expand package:<name>` (**appmap-review**; it needs an AppMap CLI whose
+`compare` has that option), or give the renderer the two recordings and let it make
+the diff, which works with any CLI:
+
+```sh
+node "${CLAUDE_SKILL_DIR}/assets/render.mjs" --changed-only --expand package:server \
+  --base-appmap <workspace>/out/report/base/<trace>.appmap.json \
+  --head-appmap <workspace>/out/report/head/<trace>.appmap.json --out <page.html>
+```
+
+The compare leaves each side's recordings in `out/report/base` and `out/report/head`.
+
 - **One diagram**, when a few calls were added or removed: the comparison, as above.
   Use step 2 on each side's recording to find the code change behind each changed
   step, and say it in a note.
@@ -221,7 +272,7 @@ so don't link it. Keep the recordings and notes beside the pictures (for example
 
 The page is one annotated diagram and nothing else. Longer explanation (the rule the
 code should follow, why the tests passed, what a different path would have done)
-belongs in the **appmap-review** report, an **appmap-explain-branch** page, or your
+belongs in the **appmap-review** report or your
 reply, not under the diagram.
 
 - Same plain-language rules as **appmap-review**: say what happens to a person, then

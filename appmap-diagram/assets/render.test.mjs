@@ -4,7 +4,17 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { layout, overlaps, outside, renest, renderHtml, exceptionsByCall, sqlLabel } from "./render.mjs";
+import {
+  layout,
+  outline,
+  overlaps,
+  outside,
+  barCrossings,
+  renest,
+  renderHtml,
+  exceptionsByCall,
+  sqlLabel,
+} from "./render.mjs";
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const load = (f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
@@ -276,4 +286,106 @@ test("a plain note at the end of a call is drawn beside the call's bars, not acr
     notes: { notes: [{ after: "accept", plain: true, lines: ["status still PENDING"] }] },
   });
   assert.equal(after.ops.find((o) => o.k === "plain").anchor, "middle");
+});
+
+// --- one call by number, the outline, note placement -------------------------------------------
+
+const labelsOf = (m) => m.ops.filter((o) => o.k === "label" || o.k === "self").map((o) => o.text);
+
+test("hide takes name#n for one call; the others keep their numbers", () => {
+  // watcher() has emit under start (#1) and emit at the top level (#2).
+  const m = layout(watcher(), {
+    notes: { hide: ["emit#1"], steps: [{ at: "emit#2", heading: "the second emit" }] },
+  });
+  assert.deepEqual(labelsOf(m), ["start()", "handle()", "emit()"]);
+  assert.deepEqual(
+    m.ops.filter((o) => o.k === "heading").map((o) => o.text),
+    ["the second emit"],
+  );
+});
+
+test("collapse takes name#n too", () => {
+  const all = layout(watcher(), { notes: { collapse: ["start"] } });
+  const one = layout(watcher(), { notes: { collapse: ["start#1"] } });
+  assert.deepEqual(labelsOf(one), labelsOf(all));
+  assert.ok(labelsOf(one).length < labelsOf(layout(watcher())).length);
+});
+
+test("outline lists each call with its lane and number, and marks what the notes hide", () => {
+  const lines = outline(watcher(), { notes: { hide: ["handle"] } });
+  assert.ok(lines.includes("start  -> test"));
+  assert.ok(lines.some((l) => /^  emit#1  -> server/.test(l)), lines.join("\n"));
+  assert.ok(lines.includes("handle  -> server  [hidden]"));
+  assert.ok(lines.includes("emit#2  -> server"));
+  const shallow = outline(watcher(), { depth: 0 });
+  assert.ok(shallow.some((l) => /^start  -> test  \[not opened, \d+ inside\]$/.test(l)), shallow.join("\n"));
+});
+
+test("a heading on an end or after note is the first line of its box; on a before note, a step", () => {
+  const inBox = layout(watcher(), { notes: { notes: [{ end: "start", heading: "server.mjs:10", lines: ["x"] }] } });
+  assert.deepEqual(inBox.ops.find((o) => o.k === "note").lines.map((l) => l.text), ["server.mjs:10", "x"]);
+  assert.ok(!inBox.ops.some((o) => o.k === "heading"));
+  const step = layout(watcher(), { notes: { notes: [{ before: "start", heading: "1 · first", lines: ["x"] }] } });
+  assert.deepEqual(step.ops.filter((o) => o.k === "heading").map((o) => o.text), ["1 · first"]);
+  assert.deepEqual(step.ops.find((o) => o.k === "note").lines.map((l) => l.text), ["x"]);
+});
+
+test("an under note sits below the call's arrow and above what the call does", () => {
+  const m = layout(watcher(), {
+    notes: { notes: [{ under: "start", lines: ["under"] }, { after: "start", lines: ["after"] }] },
+  });
+  const y = (text) => m.ops.find((o) => o.k === "note" && o.lines[0].text === text).y;
+  const firstChild = Math.min(...m.ops.filter((o) => o.k === "label" && o.text === "emit()").map((o) => o.y));
+  assert.ok(y("under") < firstChild && firstChild < y("after"));
+});
+
+test("a note on a lane with calls open starts to the right of their bars, and a crossing is reported", () => {
+  const m = layout(watcher(), { notes: { notes: [{ under: "start", lines: ["inside start"] }] } });
+  const note = m.ops.find((o) => o.k === "note");
+  const bar = m.ops.find((o) => o.k === "act" && o.lane === note.lane);
+  assert.ok(note.x >= bar.x + 12);
+  assert.deepEqual(barCrossings(m), []);
+  // A long heading runs from the left edge across the server lane's open bar.
+  const long = "a step heading long enough to reach across the first lanes of this picture and beyond";
+  const crossed = layout(watcher(), { notes: { steps: [{ at: "emit", heading: long }] } });
+  assert.deepEqual(barCrossings(crossed), [long]);
+});
+
+test("a sanitized exception message is not drawn", () => {
+  const withMessage = (message) => {
+    const s = seq();
+    const map = new Map([...exceptions].map(([id, list]) => [id, list.map((e) => ({ ...e, message }))]));
+    return texts(layout(s, { exceptions: map }));
+  };
+  assert.ok(withMessage("real words").some((t) => t.includes("real words")));
+  assert.ok(!withMessage("<v141>").some((t) => t.includes("<v141>")));
+});
+
+test("hidden calls before the first drawn call do not break the setup band; hide takes sql: too", () => {
+  const withSetupCall = () => {
+    const s = watcher();
+    const q = (query, id) => ({ nodeType: 6, callee: "class:server", query, eventIds: [id], children: [] });
+    s.rootActions = [
+      { nodeType: 3, caller: "class:test", callee: "class:test", name: "make_game", eventIds: [90], children: [] },
+      q("INSERT INTO players (name) VALUES (%s)", 91),
+      ...s.rootActions,
+      q("SELECT games.id FROM games WHERE games.id = %s", 92),
+    ];
+    return s;
+  };
+  const shown = layout(withSetupCall());
+  assert.ok(!shown.ops.some((o) => o.k === "setup"), "a call comes first, so its query is drawn as an arrow");
+  const hidden = layout(withSetupCall(), { notes: { hide: ["make_game", "sql:FROM games"], setup: { text: "one player" } } });
+  const band = hidden.ops.find((o) => o.k === "setup");
+  assert.equal(band.lines[0].text, "one player");
+  const t = texts(hidden);
+  assert.ok(!t.some((x) => x.includes("make_game")));
+  assert.ok(!t.some((x) => x.includes("FROM games")), "the trailing query is hidden");
+});
+
+test("sqlLabel keeps a function in the select list; an indented code line keeps its indent", () => {
+  const label = sqlLabel("SELECT coalesce(sum(contracts.amount), %(c)s::INTEGER) AS c1 FROM contracts JOIN events ON 1");
+  assert.match(label, /^SELECT coalesce\(sum\(.*… FROM contracts/, label);
+  const m = layout(watcher(), { notes: { notes: [{ end: "start", lines: [{ text: "    return False", mono: true }] }] } });
+  assert.match(renderHtml(m, {}), /xml:space="preserve"[^>]*>    return False</);
 });

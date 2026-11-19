@@ -1,6 +1,6 @@
 ---
 name: appmap-archive
-description: Package AppMap recordings as an AppMap archive (one .tar per revision), the form the other skills take when they compare two revisions. Makes the archive from a list of recording files or directories without changing them, and explains the three ways to hand two sides to appmap-review, appmap-analyze, appmap-explain-branch and appmap-diagram - committed gold traces, two archives, or two directories of recordings. Use when asked to archive, package, or hand over AppMap recordings, or when another skill needs the base and head recordings of a change. It does not record anything and does not check out or run a revision.
+description: Package AppMap recordings as an AppMap archive (one .tar per revision), the form the other skills take when they compare two revisions. Makes the archive from a list of recording files or directories without changing them, and explains the three ways to hand two sides to appmap-review, appmap-analyze and appmap-diagram - committed gold traces, two archives, or two directories of recordings. Use when asked to archive, package, or hand over AppMap recordings, or when another skill needs the base and head recordings of a change. It does not record anything and does not check out or run a revision.
 ---
 
 # Skill: AppMap Archive
@@ -16,7 +16,7 @@ caller: runs head its own way ──► head recordings ──┤
                                                     ▼
                           appmap-review compare ──► change report, diff diagrams
                                                     ▼
-                    appmap-review / appmap-analyze / appmap-explain-branch / appmap-diagram
+                    appmap-review / appmap-analyze / appmap-diagram
 ```
 
 ## The three ways to hand over two sides
@@ -42,18 +42,29 @@ its revision, and it needs no checkout to read.
 node "${CLAUDE_SKILL_DIR}/assets/archive.mjs" --revision <name> --out <file.tar> <recording or directory>...
 ```
 
-Run it inside the project, so the project's `appmap.yml` is the one used.
+Run it inside the project, so the project's `appmap.yml` is the one used. An AppMap
+CLI whose `archive` command has `--appmap-dir` works without one, so recordings can be
+archived from anywhere; an older CLI needs the `appmap.yml`.
 
 - `--revision` names the archive: the commit SHA, or a label such as `base`.
 - A file is archived under its own name. A directory's recordings keep their
   paths below it.
 - An existing `--out` file is not overwritten.
 
-The helper copies the recordings to a temporary directory and archives the
-copy. Run directly, `appmap archive` writes an index directory beside every
-recording and several files into the recordings directory, and puts its tar
-under the directory it runs in; the helper leaves the recordings and the
-project as they were.
+The helper copies the recordings to a temporary directory, each at the path it
+will have in the archive, and archives the copy. The recordings and the project are
+left as they were, and a list of files and directories becomes one archive.
+
+Without the helper, when one directory already holds the recordings laid out the way
+you want them, a CLI that has these options does the same in one command:
+
+```sh
+appmap archive --appmap-dir <directory> --no-in-place --revision <name> --output-file <file.tar>
+```
+
+`--no-in-place` is what leaves the directory unchanged. An older CLI has neither
+option: it indexes `appmap_dir` in place and puts its tar under the directory it runs
+in, which is what the helper works around.
 
 ## Rules for two sides that compare cleanly
 

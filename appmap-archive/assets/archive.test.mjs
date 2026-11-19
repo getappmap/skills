@@ -24,6 +24,24 @@ const FAKE_CLI = `import fs from 'node:fs';
 import path from 'node:path';
 const [command, ...rest] = process.argv.slice(2);
 if (command !== 'archive') process.exit(1);
+// FAKE_APPMAP_NEW: a CLI whose archive takes --appmap-dir and --output-file, with no appmap.yml.
+const NEW = Boolean(process.env.FAKE_APPMAP_NEW);
+if (rest.includes('--help')) { console.log(NEW ? 'archive --appmap-dir --output-file' : 'archive --revision'); process.exit(0); }
+const option = (name) => rest[rest.indexOf(name) + 1];
+if (NEW && rest.includes('--appmap-dir')) {
+  if (process.env.FAKE_APPMAP_FAIL) { console.error('archive blew up'); process.exit(5); }
+  const found = {};
+  const walk = (dir, prefix = '') => {
+    for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (dirent.isDirectory()) walk(path.join(dir, dirent.name), prefix + dirent.name + '/');
+      else if (dirent.name.endsWith('.appmap.json')) found[prefix + dirent.name] = fs.readFileSync(path.join(dir, dirent.name), 'utf8');
+    }
+  };
+  walk(option('--appmap-dir'));
+  fs.writeFileSync(path.join(option('--appmap-dir'), 'appmap_archive.json'), '{}');
+  fs.writeFileSync(option('--output-file'), JSON.stringify({ cwd: process.cwd(), revision: option('--revision'), hasYml: fs.existsSync('appmap.yml'), found }));
+  process.exit(0);
+}
 if (!fs.existsSync('appmap.yml')) { console.error('no appmap.yml in ' + process.cwd()); process.exit(3); }
 if (!fs.existsSync('recs')) { console.error('AppMap directory recs does not exist'); process.exit(4); }
 if (process.env.FAKE_APPMAP_FAIL) { console.error('archive blew up'); process.exit(5); }
@@ -54,9 +72,9 @@ function makeProject(t) {
     fs.writeFileSync(file, content);
     return file;
   };
-  const run = (args, env = {}) => {
+  const run = (args, env = {}, cwd = path.join(project, 'sub')) => {
     const result = spawnSync(process.execPath, [ARCHIVE, '--appmap-cli', `${process.execPath} ${cli}`, ...args],
-      { cwd: path.join(project, 'sub'), encoding: 'utf8', env: { ...process.env, ...env } });
+      { cwd, encoding: 'utf8', env: { ...process.env, ...env } });
     assert.equal(result.error, undefined);
     return result;
   };
@@ -137,4 +155,39 @@ test('planArchive: a directory keeps paths below it, with forward slashes', asyn
   const planned = await planArchive([path.join(root, 'runs')]);
   assert.deepEqual([...planned.keys()], ['a/b/deep.appmap.json']);
   assert.equal(planned.get('a/b/deep.appmap.json'), path.join(root, 'runs', 'a', 'b', 'deep.appmap.json'));
+});
+
+test('newer CLI: one archive command, the same paths, and no appmap.yml needed', (t) => {
+  const { root, project, write, run, tree } = makeProject(t);
+  write('runs/pytest/checkout.appmap.json', 'checkout');
+  const loose = write('elsewhere/login.appmap.json', 'login');
+  const before = { runs: tree(path.join(root, 'runs')), project: tree(project) };
+  const newCli = { FAKE_APPMAP_NEW: '1' };
+
+  const inProject = path.join(root, 'in-project.tar');
+  const first = run(['--revision', 'abc123', '--out', inProject, path.join(root, 'runs'), loose], newCli);
+  assert.equal(first.status, 0, first.stderr);
+  const made = JSON.parse(fs.readFileSync(inProject, 'utf8'));
+  assert.deepEqual(made.found, { 'login.appmap.json': 'login', 'pytest/checkout.appmap.json': 'checkout' });
+  assert.equal(made.revision, 'abc123');
+  assert.equal(made.hasYml, true, "the project's appmap.yml is used when there is one");
+  assert.ok(!fs.existsSync(made.cwd), 'the temporary copy is gone');
+  assert.deepEqual(tree(path.join(root, 'runs')), before.runs);
+  assert.deepEqual(tree(project), before.project);
+
+  // Outside any project: the older CLI cannot, the newer one can.
+  const outside = path.join(root, 'no-project');
+  fs.mkdirSync(outside);
+  const refused = run(['--revision', 'x', '--out', path.join(root, 'x.tar'), loose], {}, outside);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /No appmap\.yml found/);
+  const alone = path.join(root, 'alone.tar');
+  const second = run(['--revision', 'x', '--out', alone, loose], newCli, outside);
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /Config: {3}none /);
+  assert.equal(JSON.parse(fs.readFileSync(alone, 'utf8')).hasYml, false);
+
+  const failed = run(['--revision', 'y', '--out', path.join(root, 'y.tar'), loose], { ...newCli, FAKE_APPMAP_FAIL: '1' });
+  assert.equal(failed.status, 1);
+  assert.ok(!fs.existsSync(path.join(root, 'y.tar')));
 });

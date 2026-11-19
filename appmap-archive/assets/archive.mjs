@@ -4,21 +4,24 @@
 //
 //   node <skill>/assets/archive.mjs --revision base --out base.tar <recording or directory>...
 //
-// `appmap archive` indexes the recordings where they are, writing an index
-// directory beside each one plus appmaps.tar.gz, appmap_archive.json and
-// openapi.yml into the recordings directory, and it puts its tar under the
-// directory it runs in. It also needs an appmap.yml there, names the archive
-// after the current git commit unless told otherwise, and mangles an absolute
-// --output-file. So this helper copies the recordings to a temporary directory
-// with the project's appmap.yml, archives them there under the name given, and
-// copies only the tar out.
+// The helper copies the recordings into one temporary directory, each at the
+// path it will have in the archive, and archives that copy. So a list of files
+// and directories becomes one archive, and the originals are never written to.
+//
+// With an AppMap CLI whose archive takes --appmap-dir, that is one command:
+// `archive --appmap-dir <copy> --revision <name> --output-file <out>`, and no
+// appmap.yml is needed. An older CLI indexes only the appmap_dir named by an
+// appmap.yml in its working directory, puts its tar under that directory, and
+// mangles an absolute --output-file; for it the helper also copies the
+// project's appmap.yml in, archives there, and copies the tar out.
 //
 // `appmap compare` pairs a recording on one side with the recording at the same
 // path on the other. A file is archived under its own name and a directory's
 // recordings under their paths below it; two that would share a path are refused.
 //
 // Needs Node and the AppMap CLI. Run it inside the project, so the nearest
-// appmap.yml above the current directory is the one used.
+// appmap.yml above the current directory is the one used (an older CLI needs
+// one; a newer CLI uses it when it is there).
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -78,6 +81,7 @@ the project are left as they were.
   --help            Show this help.
 
 Run it inside the project: the nearest appmap.yml above the current directory is used.
+An AppMap CLI whose archive command has --appmap-dir works without one.
 `);
 }
 
@@ -100,30 +104,47 @@ async function archive(options, inputs) {
     throw new Error(`Refusing to overwrite ${outFile}. Remove it, or name another --out.`);
   }
   const planned = await planArchive(inputs);
-  const { appmapYmlDir, appmapDir } = await locateAppmap(process.cwd());
-  if (path.isAbsolute(appmapDir) || appmapDir.split(/[\\/]/).includes('..')) {
-    throw new Error(`appmap_dir in ${path.join(appmapYmlDir, 'appmap.yml')} is '${appmapDir}', which points outside the project; the archive is made from a copy, so it needs a path inside the project.`);
-  }
   const cli = cliInvocation(options.appmapCli ?? defaultAppmapCli());
+  // A CLI whose archive takes --appmap-dir archives a directory as it is, writes the
+  // tar where it is told, and needs no appmap.yml. An older one needs all three
+  // arranged for it.
+  const direct = cliArchivesDirectory(cli);
+  let located = null;
+  try {
+    located = await locateAppmap(process.cwd());
+  } catch (error) {
+    if (!direct) throw error;
+  }
+  const appmapYml = located && path.join(located.appmapYmlDir, 'appmap.yml');
+  const appmapDir = direct ? 'recordings' : located.appmapDir;
+  if (path.isAbsolute(appmapDir) || appmapDir.split(/[\\/]/).includes('..')) {
+    throw new Error(`appmap_dir in ${appmapYml} is '${appmapDir}', which points outside the project; the archive is made from a copy, so it needs a path inside the project.`);
+  }
 
+  // Either way the recordings are copied first: the list becomes one directory with
+  // each recording at its planned path, and the originals are never written to.
   const work = await fs.mkdtemp(path.join(os.tmpdir(), 'appmap-archive-'));
   try {
-    await fs.copyFile(path.join(appmapYmlDir, 'appmap.yml'), path.join(work, 'appmap.yml'));
+    if (appmapYml) await fs.copyFile(appmapYml, path.join(work, 'appmap.yml'));
     for (const [name, source] of planned) {
       const target = path.join(work, appmapDir, ...name.split('/'));
       await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.copyFile(source, target);
     }
-    runCli(cli, ['archive', '--revision', options.revision], work);
     await fs.mkdir(path.dirname(outFile), { recursive: true });
-    await fs.copyFile(path.join(work, '.appmap', 'archive', 'full', `${options.revision}.tar`), outFile);
+    if (direct) {
+      runCli(cli, ['archive', '--appmap-dir', path.join(work, appmapDir), '--revision', options.revision, '--output-file', outFile], work);
+    } else {
+      runCli(cli, ['archive', '--revision', options.revision], work);
+      await fs.copyFile(path.join(work, '.appmap', 'archive', 'full', `${options.revision}.tar`), outFile);
+    }
   } finally {
     await fs.rm(work, { recursive: true, force: true });
   }
 
   console.log(`Archive:  ${outFile}`);
   console.log(`Revision: ${options.revision}`);
-  console.log(`Config:   ${path.join(appmapYmlDir, 'appmap.yml')}`);
+  console.log(`Config:   ${appmapYml ?? 'none (no appmap.yml above the current directory)'}`);
   console.log(`Recordings: ${planned.size}`);
   for (const name of [...planned.keys()].sort()) console.log(`  ${name.replace(/\.appmap\.json$/, '')}`);
   console.log('');
@@ -189,6 +210,18 @@ async function listAppmaps(root, dir = root) {
     else if (dirent.name.endsWith('.appmap.json')) found.push(path.relative(root, full));
   }
   return found;
+}
+
+// Whether this CLI's 'archive' takes --appmap-dir (and with it an --output-file
+// used as given). Asked of the CLI itself, since one built from source reports
+// an older version.
+function cliArchivesDirectory(cli) {
+  try {
+    // Not in the working directory: the CLI leaves .appmap/run-stats wherever it runs.
+    return runCli(cli, ['archive', '--help'], os.tmpdir()).includes('--appmap-dir');
+  } catch {
+    return false;
+  }
 }
 
 function cliInvocation(appmapCli) {

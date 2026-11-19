@@ -1,0 +1,25 @@
+{
+ "metadata": {
+  "name": "unconditional accept rejected while paused too"
+ },
+ "events": [
+  {
+   "id": 31,
+   "event": "call",
+   "defined_class": "nova_server.contracts",
+   "method_id": "accept",
+   "static": true
+  },
+  {
+   "id": 36,
+   "event": "return",
+   "parent_id": 31,
+   "exceptions": [
+    {
+     "class": "nova_server.contracts.ContractError",
+     "message": "The game is paused \u2014 resume it to accept a contract."
+    }
+   ]
+  }
+ ]
+}

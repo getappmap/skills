@@ -1,0 +1,25 @@
+{
+ "title": "Sign-in, version 0.3.0 and version 0.3.1",
+ "subtitle": "test_sign_in_with_password recorded on each version, then compared",
+ "pageTitle": "Sign-in Before And After",
+ "rootLane": "test",
+ "laneLabels": {
+  "package:bank/auth": {
+   "sub": "auth.py"
+  },
+  "package:bank/accounts": {
+   "sub": "accounts.py"
+  }
+ },
+ "notes": [
+  {
+   "after": "sql:DELETE FROM sessions",
+   "plain": true,
+   "kind": "error",
+   "lines": [
+    "0.3.1 no longer ends the customer's other sessions"
+   ]
+  }
+ ],
+ "footer": "Every step shown differs between the two traces, or contains one that does."
+}

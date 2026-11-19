@@ -1,0 +1,111 @@
+meta:
+  title: AppMap Diagram — a sequence diagram from one trace
+  description: "The appmap-diagram skill draws an AppMap trace as a sequence diagram that explains a code path to someone who hasn't read the code: only the calls that matter, with notes for what the trace can't show, in one file you can share."
+  notes: "For developers and Showcase Studio users. Made for the 4:3 embed. The three 'What you get' pictures are the skill's real renderer output in its dark theme, cropped, with a margin and blank space below for the captions. They are drawn from a made-up banking example: hand-written trace data for a transfer and its fix, not a trace of a real app. Its source files are in this showcase's example/ folder (gen.py writes the trace data and notes files). No voiceover yet, so timing comes from the captions."
+  loop: true
+  view: embed
+  sceneMaxMs: 10000
+  targetMs: 90000
+
+publish:
+  youtube43:
+    title: appmap-diagram skill
+  caption: "The appmap-diagram skill draws a code review finding or code behaviro change as a sequence diagram that explains a code path to someone who hasn't read the code: only the calls that matter, with notes for what the trace can't show, in one file you can share."
+
+scenes:
+  - id: intro
+    theme: statement
+    eyebrow: Opening
+    title: Introducing the appmap-diagram skill
+    captions: []
+    media:
+      kind: image
+      asset: appmap-mark
+      alt: "AppMap logo: a white A on a pink circle"
+      frame: mark
+  - id: why
+    theme: console
+    eyebrow: Why it exists
+    title: A diagram you can read without the code
+    note: "Answers 'AppMap already draws diagrams, so why this?'. Graphic audience.tsx: the right column comes in at 4 s."
+    captions:
+      - text: The AppMap IDE plugin depicts a full AppMap trace.
+      - text: This skill uses the same data, but provides a custom, focused diagram.
+    media:
+      kind: graphic
+      graphic: audience
+      alt: "Two columns: the AppMap IDE plugin shows everything that was recorded to the developer exploring a trace; the appmap-diagram skill draws a trimmed, annotated diagram as an image, ZIP or PDF that you can share anywhere"
+      frame: full
+  - id: three-uses
+    theme: console
+    eyebrow: Use cases
+    title: Three use cases
+    note: All three use cases on one slide, each with its command. They produce the same kind of diagram, so the output is shown once, in the slides after this.
+    captions:
+      - text: Draw a finding's trace, a changed trace, or a comparison of two versions.
+      - text: Each one starts with the same command.
+    media:
+      kind: graphic
+      graphic: three-uses
+      alt: "Three use cases, each with its command: explain a review finding, show how a gold trace changed, and compare traces of a test case across versions"
+      frame: full
+
+  - id: plain
+    theme: console
+    eyebrow: What you get · the diagram
+    title: The centerpiece is a sequence diagram
+    captions:
+      - text: "The centerpiece is a sequence diagram: every call and query, in order."
+      - text: Every solid arrow comes from the trace.
+    media:
+      kind: image
+      asset: bank-diagram-dark
+      alt: "The top of a diagram of a bank transfer: lanes for the customer's app, transfers, accounts, ledger and the database, with arrows for each call and query"
+      frame: full
+      fit: contain
+      align: top
+      motion: still
+
+  - id: notes
+    theme: console
+    eyebrow: What you get · annotations
+    title: Annotations explain the changes
+    captions:
+      - text: An annotation explains what the trace can't show.
+      - text: Here, the code never checks who owns the account.
+    media:
+      kind: image
+      asset: bank-annotation-dark
+      alt: "A close view of the diagram: after the has_funds call, a red box quotes the line of code and says the account's owner is never checked"
+      frame: full
+      fit: contain
+      align: top
+      motion: still
+
+  - id: changes
+    theme: console
+    eyebrow: What you get · changes
+    title: See what changed between two traces
+    captions:
+      - text: Green was added. Red was removed. Amber changed. Teal moved.
+      - text: A comparison of two versions looks the same.
+    media:
+      kind: image
+      asset: bank-diff-dark
+      alt: "A close view of what a fix changed in a bank transfer: an owner check added in green, a balance read removed in red and struck through, changed steps in amber, and a moved step in teal"
+      frame: full
+      fit: contain
+      align: top
+      motion: still
+
+  - id: outro
+    theme: statement
+    eyebrow: Close
+    title: /appmap-diagram
+    captions:
+      - text: Custom diagrams of code, rooted in ground-truth traces.
+    media:
+      kind: image
+      asset: appmap-mark
+      alt: "AppMap logo: a white A on a pink circle"
+      frame: mark

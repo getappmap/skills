@@ -1,0 +1,197 @@
+{
+ "actors": [
+  {
+   "id": "package:bank/auth",
+   "name": "auth",
+   "order": 1000
+  },
+  {
+   "id": "package:bank/accounts",
+   "name": "accounts",
+   "order": 1000
+  },
+  {
+   "id": "database:Database",
+   "name": "Database",
+   "order": 4000
+  }
+ ],
+ "rootActions": [
+  {
+   "nodeType": 3,
+   "callee": "package:bank/auth",
+   "name": "sign_in",
+   "static": true,
+   "stableProperties": {
+    "event_type": "function",
+    "id": "sign_in",
+    "raises_exception": false
+   },
+   "returnValue": {
+    "raisesException": false
+   },
+   "eventIds": [
+    11
+   ],
+   "children": [
+    {
+     "nodeType": 3,
+     "callee": "package:bank/accounts",
+     "name": "find_customer",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "find_customer",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      2
+     ],
+     "children": [
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "SELECT customers.* FROM customers WHERE customers.email = %s",
+       "children": [],
+       "eventIds": [
+        1
+       ],
+       "caller": "package:bank/accounts"
+      }
+     ],
+     "caller": "package:bank/auth"
+    },
+    {
+     "nodeType": 3,
+     "callee": "package:bank/auth",
+     "name": "check_lockout",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "check_lockout",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      4
+     ],
+     "children": [
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "SELECT count(*) FROM login_attempts WHERE customer_id = %s",
+       "children": [],
+       "eventIds": [
+        3
+       ],
+       "caller": "package:bank/auth",
+       "diffMode": 1
+      }
+     ],
+     "caller": "package:bank/auth",
+     "diffMode": 1
+    },
+    {
+     "nodeType": 3,
+     "callee": "package:bank/auth",
+     "name": "verify_password",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "verify_password",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      5
+     ],
+     "children": [],
+     "caller": "package:bank/auth"
+    },
+    {
+     "nodeType": 3,
+     "callee": "package:bank/auth",
+     "name": "record_login_attempt",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "record_login_attempt",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      7
+     ],
+     "children": [
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "INSERT INTO login_attempts (customer_id, ok) VALUES (%s, %s)",
+       "children": [],
+       "eventIds": [
+        6
+       ],
+       "caller": "package:bank/auth",
+       "diffMode": 1
+      }
+     ],
+     "caller": "package:bank/auth",
+     "diffMode": 1
+    },
+    {
+     "nodeType": 6,
+     "callee": "database:Database",
+     "query": "DELETE FROM sessions WHERE sessions.customer_id = %s",
+     "children": [],
+     "eventIds": [
+      8
+     ],
+     "caller": "package:bank/auth",
+     "diffMode": 2
+    },
+    {
+     "nodeType": 3,
+     "callee": "package:bank/auth",
+     "name": "create_session",
+     "static": true,
+     "stableProperties": {
+      "event_type": "function",
+      "id": "create_session",
+      "raises_exception": false
+     },
+     "returnValue": {
+      "raisesException": false
+     },
+     "eventIds": [
+      10
+     ],
+     "children": [
+      {
+       "nodeType": 6,
+       "callee": "database:Database",
+       "query": "INSERT INTO sessions (customer_id, token, expires_at) VALUES (%s, %s, %s)",
+       "children": [],
+       "eventIds": [
+        9
+       ],
+       "caller": "package:bank/auth",
+       "diffMode": 3
+      }
+     ],
+     "caller": "package:bank/auth",
+     "diffMode": 3
+    }
+   ],
+   "diffMode": 3
+  }
+ ]
+}

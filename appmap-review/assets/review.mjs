@@ -10,6 +10,7 @@
 //   node <skill>/assets/review.mjs compare --base v1.2.0 --head feature-branch
 //   node <skill>/assets/review.mjs compare --base <last blessed commit> --fresh
 //   node <skill>/assets/review.mjs compare --base-appmap old.appmap.json --head-appmap new.appmap.json
+//   node <skill>/assets/review.mjs compare --base-appmap base-recordings/ --head-archive head.tar
 //
 // It needs only git, Node, and the AppMap CLI, so it runs the same on macOS,
 // Linux, and Windows. The steps, and the CLI traps each one avoids:
@@ -21,15 +22,22 @@
 //      recordings (--fresh), or the working tree's baselines (--uncommitted).
 //      Or both sides are single files (--base-appmap/--head-appmap): two
 //      recordings of one scenario made by hand, copied to one shared trace name
-//      so they compare as one trace however the files were named. That mode
-//      reads no manifest and no gold traces.
+//      so they compare as one trace however the files were named. Or each side
+//      is a directory of recordings (same flags) or an AppMap archive
+//      (--base-archive/--head-archive), which pair up by path. Those modes
+//      read no manifest and no gold traces.
 //   2. `appmap archive` each side. It writes its default .appmap/archive/full/<rev>.tar;
-//      an absolute --output-file is mangled by its internal tar.
+//      an absolute --output-file is mangled by its internal tar. A side given as
+//      an archive skips this step: its tar is filed under the side's name.
 //   3. `appmap restore` each archive into out/report/<rev>. A plain tar extraction
 //      leaves the inner appmaps.tar.gz packed, and compare then sees zero AppMaps.
 //      restore refuses a directory that already exists, so none is created first.
 //   4. `appmap compare` from out/, which needs appmap.yml in its working dir. No
 //      --clobber-output-dir: it would delete the restored base/ and head/.
+//      With an AppMap CLI whose compare takes --base-archive, steps 2-4 are two
+//      commands per side: `archive --appmap-dir <side> --output-file <side>.tar`,
+//      then one `compare --base-archive --head-archive [--expand]`, which restores
+//      the archives itself. The traps above are for older CLIs.
 //   5. For each changed trace, measure its diff sequence diagram (nodes by diff
 //      mode, moved blocks with where they came from, labels on the changed nodes)
 //      and render the same diff as text with `appmap sequence-diagram-diff`.
@@ -63,12 +71,18 @@ async function main() {
   if (command !== 'compare') {
     throw new Error(`Unknown command: ${command}. The only command is 'compare'; see --help.`);
   }
-  const adhoc = options.baseAppmap !== null || options.headAppmap !== null;
-  if (adhoc && (options.baseAppmap === null || options.headAppmap === null)) {
-    throw new Error('Ad-hoc mode needs both sides: pass --base-appmap FILE and --head-appmap FILE.');
+  const given = (side) => options[`${side}Appmap`] !== null || options[`${side}Archive`] !== null;
+  const adhoc = given('base') || given('head');
+  if (adhoc && !(given('base') && given('head'))) {
+    throw new Error('Ad-hoc mode needs both sides: pass --base-appmap or --base-archive, and --head-appmap or --head-archive.');
+  }
+  for (const side of ['base', 'head']) {
+    if (options[`${side}Appmap`] !== null && options[`${side}Archive`] !== null) {
+      throw new Error(`Pass --${side}-appmap or --${side}-archive, not both.`);
+    }
   }
   if (adhoc && (options.fresh || options.uncommitted)) {
-    throw new Error('--base-appmap/--head-appmap cannot be combined with --fresh or --uncommitted.');
+    throw new Error('--base-appmap/--head-appmap and --base-archive/--head-archive cannot be combined with --fresh or --uncommitted.');
   }
   if (!adhoc && !options.base) {
     throw new Error('compare requires --base REV, the revision to compare against.');
@@ -83,20 +97,50 @@ async function main() {
   // Ad-hoc mode has no manifest: the recordings are named on the command line
   // and the CLI comes from --appmap-cli or the usual default.
   const config = adhoc ? null : await loadManifest(path.join(goldDir, 'manifest.yaml'));
-  const { appmapYmlDir, appmapDir } = await locateAppmap(adhoc ? projectRoot : goldDir);
-  const appmapYml = path.join(appmapYmlDir, 'appmap.yml');
-  const appmapsDir = path.join(appmapYmlDir, appmapDir);
+  // --appmap-cli wins in every mode; then the manifest's appmap_cli; then the usual default.
+  const cli = cliInvocation(options.appmapCli ?? config?.appmap_cli ?? defaultAppmapCli());
+  const direct = cliComparesArchives(cli);
+  // A CLI that compares archives directly is newer than the moved-block diff, whatever
+  // version it reports (one built from source reports the last release's).
+  const cliVersion = direct ? null : checkCliVersion(cli);
+  const expand = options.expand ? options.expand.split(',').filter(Boolean) : [];
+  if (expand.length > 0 && !direct) {
+    throw new Error(
+      "--expand needs an AppMap CLI whose 'compare' command has --expand and --base-archive; this one does not. " +
+        'Update the CLI, or draw file lanes with appmap-diagram (render.mjs --base-appmap/--head-appmap --expand).',
+    );
+  }
+  // A CLI that compares archives directly needs no appmap.yml, so two recordings
+  // made by hand can be compared from anywhere. The gold-traces modes still read it.
+  let located;
+  try {
+    located = await locateAppmap(adhoc ? projectRoot : goldDir);
+  } catch (error) {
+    if (!(adhoc && direct)) throw error;
+    located = { appmapYmlDir: null, appmapDir: path.join('tmp', 'appmap') };
+  }
+  const { appmapYmlDir, appmapDir } = located;
+  const appmapYml = appmapYmlDir && path.join(appmapYmlDir, 'appmap.yml');
+  const appmapsDir = appmapYmlDir && path.join(appmapYmlDir, appmapDir);
   const baselineDir = path.join(goldDir, 'baseline', 'appmaps');
-  const cli = cliInvocation(adhoc ? options.appmapCli ?? defaultAppmapCli() : config.appmap_cli);
-  const cliVersion = checkCliVersion(cli);
 
   let base;
   let head;
   if (adhoc) {
     // The revisions are optional here; they only name the source diff.
-    const name = options.name ?? sharedName(options.baseAppmap, options.headAppmap);
-    base = fileSource(options.baseAppmap, name, options.base && resolveRevision(projectRoot, options.base));
-    head = fileSource(options.headAppmap, name, options.head && resolveRevision(projectRoot, options.head));
+    const kinds = { base: await sideKind(options, 'base'), head: await sideKind(options, 'head') };
+    if ((kinds.base === 'file') !== (kinds.head === 'file')) {
+      throw new Error('One recording file compares only with one recording file. Give the other side as a file too, or give both sides as directories or archives.');
+    }
+    const name = kinds.base === 'file' ? options.name ?? sharedName(options.baseAppmap, options.headAppmap) : null;
+    const source = (side, rev) => {
+      const revision = rev && resolveRevision(projectRoot, rev);
+      if (kinds[side] === 'archive') return archiveSource(options[`${side}Archive`], revision);
+      if (kinds[side] === 'directory') return directorySource(options[`${side}Appmap`], revision);
+      return fileSource(options[`${side}Appmap`], name, revision);
+    };
+    base = source('base', options.base);
+    head = source('head', options.head);
   } else if (options.fresh) {
     base = gitSource(projectRoot, options.base, baselineDir);
     head = freshSource(config.entries, appmapsDir);
@@ -120,10 +164,10 @@ async function main() {
   await fs.mkdir(headAppmaps, { recursive: true });
   counts.base = await base.collect(baseAppmaps);
   counts.head = await head.collect(headAppmaps);
-  if (counts.base === 0) {
+  if (!adhoc && counts.base === 0) {
     console.error(`note: ${base.rev} has no gold traces under ${baselineDir}; every head trace will show as new.`);
   }
-  if (counts.head === 0) {
+  if (!adhoc && counts.head === 0) {
     console.error('note: the head has no gold traces; every base trace will show as removed.');
   }
 
@@ -132,26 +176,80 @@ async function main() {
   await fs.mkdir(path.join(out, 'report'), { recursive: true });
   for (const dir of [path.join(workspace, 'base'), path.join(workspace, 'head'), out]) {
     await fs.mkdir(dir, { recursive: true });
-    await fs.copyFile(appmapYml, path.join(dir, 'appmap.yml'));
+    if (appmapYml) await fs.copyFile(appmapYml, path.join(dir, 'appmap.yml'));
   }
 
-  // 2, 3 — archive and restore
-  for (const side of ['base', 'head']) {
-    console.error(`Archiving ${side} (${counts[side]} AppMap(s))...`);
-    const sideDir = path.join(workspace, side);
-    runCli(cli, ['archive', '--revision', side], sideDir);
-    runCli(cli, ['restore', '--revision', side, '--output-dir', path.join('..', 'out', 'report', side)], sideDir);
+  if (direct) {
+    // 2 — archive each side that is not one already, straight from its directory.
+    // 3, 4 — compare the two archives; the CLI restores them itself.
+    const tars = {};
+    for (const [side, source] of [['base', base], ['head', head]]) {
+      if (source.archive) {
+        if (!(await exists(source.archive))) throw new Error(`Archive not found: ${source.archive}`);
+        tars[side] = source.archive;
+        counts[side] = null; // not known without unpacking it
+        continue;
+      }
+      console.error(`Archiving ${side} (${counts[side]} AppMap(s))...`);
+      tars[side] = path.join(workspace, `${side}.tar`);
+      runCli(
+        cli,
+        ['archive', '--appmap-dir', side === 'base' ? baseAppmaps : headAppmaps, '--revision', side, '--output-file', tars[side]],
+        path.join(workspace, side),
+      );
+    }
+    console.error('Comparing...');
+    runCli(
+      cli,
+      [
+        'compare', '--base-archive', tars.base, '--head-archive', tars.head, '--output-dir', 'report',
+        ...expand.flatMap((id) => ['--expand', id]),
+      ],
+      out,
+    );
+  } else {
+    await archiveRestoreCompare({ cli, workspace, out, base, head, counts });
   }
-
-  // 4 — compare
-  console.error('Comparing...');
-  runCli(cli, ['compare', '--base-revision', 'base', '--head-revision', 'head', '--output-dir', 'report'], out);
 
   // 5 — measure and render each changed trace's diff
   const reportDir = path.join(out, 'report');
   const views = await describeChangedTraces(cli, out, reportDir);
 
-  await printSummary({ base, head, counts, reportDir, views, cliVersion });
+  await printSummary({ base, head, counts, reportDir, views, cliVersion, expand });
+}
+
+// The steps for an AppMap CLI whose 'compare' takes revision names only: archive
+// each side, file a caller's archive where restore looks, restore both, compare.
+async function archiveRestoreCompare({ cli, workspace, out, base, head, counts }) {
+  // 2, 3 — archive and restore
+  for (const [side, source] of [['base', base], ['head', head]]) {
+    const sideDir = path.join(workspace, side);
+    if (source.archive) {
+      // An archive the caller made: file it where restore looks, under this side's name.
+      console.error(`Restoring ${side} from ${source.archive}...`);
+      const filed = path.join(sideDir, '.appmap', 'archive', 'full', `${side}.tar`);
+      await fs.mkdir(path.dirname(filed), { recursive: true });
+      await copyOrExplain(source.archive, filed, 'Archive');
+    } else {
+      console.error(`Archiving ${side} (${counts[side]} AppMap(s))...`);
+      runCli(cli, ['archive', '--revision', side], sideDir);
+    }
+    runCli(cli, ['restore', '--revision', side, '--output-dir', path.join('..', 'out', 'report', side)], sideDir);
+    if (source.archive) counts[side] = (await listAppmaps(path.join(out, 'report', side))).length;
+  }
+
+  // 4 — compare
+  console.error('Comparing...');
+  runCli(cli, ['compare', '--base-revision', 'base', '--head-revision', 'head', '--output-dir', 'report'], out);
+}
+
+async function exists(file) {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseArgs(args) {
@@ -167,10 +265,14 @@ function parseArgs(args) {
     headAppmap: null,
     name: null,
     appmapCli: null,
+    baseArchive: null,
+    headArchive: null,
+    expand: null,
   };
   const valued = {
     '--dir': 'dir', '--base': 'base', '--head': 'head', '--workspace': 'workspace',
     '--base-appmap': 'baseAppmap', '--head-appmap': 'headAppmap', '--name': 'name', '--appmap-cli': 'appmapCli',
+    '--base-archive': 'baseArchive', '--head-archive': 'headArchive', '--expand': 'expand',
   };
   let command = null;
   for (let index = 0; index < args.length; index += 1) {
@@ -197,8 +299,10 @@ function parseArgs(args) {
 function printHelp() {
   console.log(`Usage:
   node <skill>/assets/review.mjs compare --base REV [--head REV | --fresh | --uncommitted]
-                                         [--dir DIR] [--workspace DIR]
-  node <skill>/assets/review.mjs compare --base-appmap FILE --head-appmap FILE [--name NAME]
+                                         [--dir DIR] [--workspace DIR] [--expand ID[,ID]]
+                                         [--appmap-cli CMD]
+  node <skill>/assets/review.mjs compare (--base-appmap PATH | --base-archive TAR)
+                                         (--head-appmap PATH | --head-archive TAR) [--name NAME]
                                          [--base REV] [--head REV] [--appmap-cli CMD] [--workspace DIR]
 
 Compares the gold traces of two revisions with the AppMap CLI (archive, restore,
@@ -206,7 +310,9 @@ compare) and prints where the results are. Interpreting them is the review.
 
 The second form (ad-hoc mode) compares two recordings made by hand, for example
 one Postman run recorded on each of two branches. It reads no manifest and no
-gold_traces/, only the nearest appmap.yml above the current directory.
+gold_traces/, only the nearest appmap.yml above the current directory. A side
+can also be a directory of recordings or an AppMap archive; those pair up by
+each recording's path, so the same test needs the same path on both sides.
 
   --base REV        The baseline revision: any git ref. Its gold traces are read from git.
   --head REV        The head revision (default: HEAD). Its gold traces are read from git.
@@ -216,14 +322,21 @@ gold_traces/, only the nearest appmap.yml above the current directory.
   --uncommitted     Head is the working tree: the baselines under DIR/baseline/appmaps,
                     blessed but not committed.
   --dir DIR         Gold-traces directory, relative to the project root (default: gold_traces).
-  --base-appmap FILE, --head-appmap FILE
-                    Ad-hoc mode: the recording made on each side. Both are copied to one
+  --base-appmap PATH, --head-appmap PATH
+                    Ad-hoc mode: the recording made on each side. Two files are copied to one
                     trace name, so the compare reports one trace however the files are named.
+                    A directory gives every recording under it, each at its path below it.
+  --base-archive TAR, --head-archive TAR
+                    Ad-hoc mode: that side as an AppMap archive, from the appmap-archive skill's
+                    helper or from 'appmap archive'. Make both sides with the same appmap.yml
+                    and CLI version.
   --name NAME       Ad-hoc mode: that trace name (default: the files' shared basename, else
                     'recording'). In this mode --base and --head are optional and only name
                     the source diff.
-  --appmap-cli CMD  Ad-hoc mode: the AppMap CLI to run (default: ~/.appmap/bin/appmap if
-                    present, else appmap on PATH). Other modes take it from the manifest.
+  --appmap-cli CMD  The AppMap CLI to run. Default: the manifest's appmap_cli in the gold-traces
+                    modes; else ~/.appmap/bin/appmap if present, else appmap on PATH.
+  --expand ID[,ID]  Split a package lane into one lane per file in the diff diagrams, for
+                    example package:server. Needs an AppMap CLI whose compare has --expand.
   --workspace DIR   Where the work happens (default: <system temp>/appmap-review). It is
                     cleared on every run, so the command refuses a non-empty directory it
                     did not make.
@@ -282,15 +395,59 @@ function fileSource(file, name, revision) {
     collect: async (dest) => {
       const target = path.join(dest, 'adhoc', `${name}.appmap.json`);
       await fs.mkdir(path.dirname(target), { recursive: true });
-      try {
-        await fs.copyFile(source, target);
-      } catch (error) {
-        if (error?.code === 'ENOENT') throw new Error(`Recording not found: ${source}`);
-        throw error;
-      }
+      await copyOrExplain(source, target, 'Recording');
       return 1;
     },
   };
+}
+
+// Every recording under a directory, each at its path below it.
+function directorySource(dir, revision) {
+  const source = path.resolve(dir);
+  return {
+    ...(revision ?? {}),
+    label: `${revision ? `${revision.label}, ` : ''}recordings under ${source}`,
+    noun: 'recordings',
+    collect: async (dest) => {
+      const copied = await copyTree(source, dest);
+      if (copied === 0) throw new Error(`No recordings (.appmap.json) under ${source}.`);
+      return copied;
+    },
+  };
+}
+
+// An AppMap archive the caller made. Nothing is collected or archived for this
+// side; main files the tar where `appmap restore` looks and counts what it held.
+function archiveSource(file, revision) {
+  const source = path.resolve(file);
+  return {
+    ...(revision ?? {}),
+    label: `${revision ? `${revision.label}, ` : ''}archive ${source}`,
+    noun: 'recordings',
+    archive: source,
+    collect: async () => 0,
+  };
+}
+
+// 'archive', 'directory', or 'file' for the way one side was given in ad-hoc
+// mode. A path that does not exist counts as a file, whose source reports it.
+async function sideKind(options, side) {
+  if (options[`${side}Archive`] !== null) return 'archive';
+  try {
+    return (await fs.stat(options[`${side}Appmap`])).isDirectory() ? 'directory' : 'file';
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 'file';
+    throw error;
+  }
+}
+
+async function copyOrExplain(source, target, what) {
+  try {
+    await fs.copyFile(source, target);
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`${what} not found: ${source}`);
+    throw error;
+  }
 }
 
 function sharedName(baseFile, headFile) {
@@ -456,7 +613,7 @@ function runCli(cli, args, cwd) {
 function checkCliVersion(cli) {
   let version = null;
   try {
-    version = (runCli(cli, ['--version'], process.cwd()).match(/\d+\.\d+\.\d+/) ?? [null])[0];
+    version = (runCli(cli, ['--version'], os.tmpdir()).match(/\d+\.\d+\.\d+/) ?? [null])[0];
   } catch {
     return null;
   }
@@ -464,6 +621,18 @@ function checkCliVersion(cli) {
     console.error(`note: AppMap CLI ${version} shows a block that moved to another caller as a removal plus an addition; ${MIN_CLI_VERSION} or later reports it as a move.`);
   }
   return version;
+}
+
+// Whether this CLI's 'compare' takes two archive files (--base-archive), and so
+// also has 'archive --appmap-dir' and 'compare --expand', which shipped with it.
+// Asked of the CLI itself: a CLI built from source reports an older version.
+function cliComparesArchives(cli) {
+  try {
+    // Not in the working directory: the CLI leaves .appmap/run-stats wherever it runs.
+    return runCli(cli, ['compare', '--help'], os.tmpdir()).includes('--base-archive');
+  } catch {
+    return false;
+  }
 }
 
 export function compareVersions(a, b) {
@@ -575,7 +744,7 @@ function firstLine(text) {
 // Summary
 // ---------------------------------------------------------------------------
 
-async function printSummary({ base, head, counts, reportDir, views, cliVersion }) {
+async function printSummary({ base, head, counts, reportDir, views, cliVersion, expand = [] }) {
   const reportFile = path.join(reportDir, 'change-report.json');
   const report = JSON.parse(await fs.readFile(reportFile, 'utf8'));
   const list = (value) => (Array.isArray(value) ? value : []);
@@ -583,9 +752,11 @@ async function printSummary({ base, head, counts, reportDir, views, cliVersion }
   const added = list(report.newAppMaps);
   const removed = list(report.removedAppMaps);
 
-  const traces = (source, count) => (source.single ? '' : ` (${count} gold traces)`);
+  const noun = (source, count) => (source.noun ? (count === 1 ? source.noun.replace(/s$/, '') : source.noun) : 'gold traces');
+  const traces = (source, count) => (source.single || count === null ? '' : ` (${count} ${noun(source, count)})`);
   console.log(`Base: ${base.label}${traces(base, counts.base)}`);
   console.log(`Head: ${head.label}${traces(head, counts.head)}`);
+  if (expand.length > 0) console.log(`Lanes: one per file in ${expand.join(', ')}`);
   console.log('');
   console.log(`Traces: ${changed.length} changed, ${added.length} new, ${removed.length} removed.`);
   const indent = ' '.repeat(11);

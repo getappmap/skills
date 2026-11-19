@@ -17,7 +17,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # bash on every runner, so the globs expand the same way on Windows.
+      # bash on every runner, so the globs expand the same way on Windows. The globs
+      # take in every skill's tests, so a new skill needs no change here.
       - name: Run the helper tests
         shell: bash
-        run: node --test appmap-gold-traces/assets/*.test.mjs appmap-review/assets/*.test.mjs appmap-analyze/assets/*.test.mjs
+        run: node --test scripts/*.test.mjs appmap-*/assets/*.test.mjs

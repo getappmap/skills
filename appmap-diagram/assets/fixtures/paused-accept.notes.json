@@ -1,0 +1,98 @@
+{
+  "title": "Accepting a payment while the game is paused",
+  "subtitle": "AppMap recording of test_unconditional_accept_rejected_while_paused_too at HEAD 1cde6e5 · relevant to finding 1 (MEDIUM)",
+  "pageTitle": "Paused Accept Trace",
+  "lanes": [
+    {
+      "id": "app",
+      "name": "Player B's app"
+    }
+  ],
+  "rootLane": "app",
+  "rootQueryLane": "package:nova_server",
+  "laneLabels": {
+    "package:nova_server": {
+      "sub": "contracts.py"
+    },
+    "package:nova_server/db/models": {
+      "sub": "db/models.py"
+    }
+  },
+  "hide": [
+    "_wall_now",
+    "_player_in_game",
+    "is_nobody (get)"
+  ],
+  "collapse": [
+    "publish_game"
+  ],
+  "setup": {
+    "text": "test setup, then the game is paused"
+  },
+  "steps": [
+    {
+      "at": "offer",
+      "heading": "1 · Player A offers ¢50, no condition"
+    },
+    {
+      "at": "accept",
+      "heading": "3 · B taps Accept"
+    },
+    {
+      "at": "raise:accept",
+      "heading": "4 · The refusal goes back to the app"
+    },
+    {
+      "at": "sql:SELECT contracts",
+      "heading": "5 · The test re-reads the contract"
+    }
+  ],
+  "notes": [
+    {
+      "before": "accept",
+      "heading": "2 · B's app draws the offer",
+      "lane": "app",
+      "kind": "client",
+      "lines": [
+        {
+          "text": "paused && condition !== null",
+          "mono": true
+        },
+        {
+          "text": "= true && false = false",
+          "mono": true
+        },
+        {
+          "text": "→ Accept button ENABLED",
+          "bold": true
+        }
+      ]
+    },
+    {
+      "after": "game_now#2",
+      "plain": true,
+      "kind": "info",
+      "lane": "package:nova_server/db/models",
+      "lines": [
+        "clock frozen at paused_at → game not over"
+      ]
+    },
+    {
+      "end": "accept",
+      "kind": "error",
+      "mono": true,
+      "lines": [
+        "if game.paused:   contracts.py:292",
+        "  raise ContractError(_PAUSED_MSG)"
+      ]
+    },
+    {
+      "after": "sql:SELECT contracts",
+      "plain": true,
+      "kind": "ok",
+      "lines": [
+        "status still PENDING · no writes after accept()"
+      ]
+    }
+  ]
+}

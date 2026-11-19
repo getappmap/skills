@@ -38,7 +38,13 @@ import path from 'node:path';
 const [command, ...rest] = process.argv.slice(2);
 const option = (name) => rest[rest.indexOf(name) + 1];
 if (command === '--version') { console.log(process.env.FAKE_APPMAP_VERSION ?? '3.204.0'); process.exit(0); }
-if (!fs.existsSync('appmap.yml')) { console.error('no appmap.yml in ' + process.cwd()); process.exit(3); }
+// FAKE_APPMAP_NEW: a CLI whose compare takes two archive files and whose archive takes
+// --appmap-dir and --output-file. Neither needs appmap.yml.
+const NEW = Boolean(process.env.FAKE_APPMAP_NEW);
+if (rest.includes('--help')) { console.log(NEW ? 'compare --base-archive --head-archive --expand' : 'compare --base-revision'); process.exit(0); }
+const directArchive = NEW && command === 'archive' && rest.includes('--appmap-dir');
+const directCompare = NEW && command === 'compare' && rest.includes('--base-archive');
+if (!directArchive && !directCompare && !fs.existsSync('appmap.yml')) { console.error('no appmap.yml in ' + process.cwd()); process.exit(3); }
 function walk(dir, prefix = '') {
   const out = {};
   if (!fs.existsSync(dir)) return out;
@@ -49,6 +55,27 @@ function walk(dir, prefix = '') {
   }
   return out;
 }
+function unpack(tar, out) {
+  fs.mkdirSync(out, { recursive: true });
+  fs.copyFileSync(tar, path.join(out, 'traces.json'));
+  // Like the real archive, each trace's index sits beside it: <trace>/sequence.json.
+  const traces = JSON.parse(fs.readFileSync(path.join(out, 'traces.json'), 'utf8'));
+  for (const [name, content] of Object.entries(traces)) {
+    fs.mkdirSync(path.join(out, name), { recursive: true });
+    fs.writeFileSync(path.join(out, name, 'sequence.json'), content);
+    fs.writeFileSync(path.join(out, name + '.appmap.json'), content); // the recording itself, as the real restore leaves it
+  }
+}
+if (directArchive) {
+  fs.writeFileSync(option('--output-file'), JSON.stringify(walk(option('--appmap-dir'))));
+  process.exit(0);
+}
+if (directCompare) {
+  for (const tar of [option('--base-archive'), option('--head-archive')]) if (!fs.existsSync(tar)) { console.error(tar + ' does not exist'); process.exit(6); }
+  unpack(option('--base-archive'), path.join(option('--output-dir'), 'base'));
+  unpack(option('--head-archive'), path.join(option('--output-dir'), 'head'));
+  fs.writeFileSync(path.join(option('--output-dir'), 'expanded.json'), JSON.stringify(rest.filter((_, i) => rest[i - 1] === '--expand')));
+}
 if (command === 'archive') {
   // Like the real CLI, archive fails when appmap_dir is missing, even with nothing to archive.
   if (!fs.existsSync('tmp/appmap')) { console.error('AppMap directory tmp/appmap does not exist'); process.exit(4); }
@@ -57,14 +84,7 @@ if (command === 'archive') {
 } else if (command === 'restore') {
   const out = option('--output-dir');
   if (fs.existsSync(out)) { console.error('exists: ' + out); process.exit(2); }
-  fs.mkdirSync(out, { recursive: true });
-  fs.copyFileSync('.appmap/archive/full/' + option('--revision') + '.tar', path.join(out, 'traces.json'));
-  // Like the real archive, each trace's index sits beside it: <trace>/sequence.json.
-  const traces = JSON.parse(fs.readFileSync(path.join(out, 'traces.json'), 'utf8'));
-  for (const [name, content] of Object.entries(traces)) {
-    fs.mkdirSync(path.join(out, name), { recursive: true });
-    fs.writeFileSync(path.join(out, name, 'sequence.json'), content);
-  }
+  unpack('.appmap/archive/full/' + option('--revision') + '.tar', out);
 } else if (command === 'compare') {
   const out = option('--output-dir');
   const read = (side) => JSON.parse(fs.readFileSync(path.join(out, side, 'traces.json'), 'utf8'));
@@ -368,4 +388,132 @@ test('compare ad-hoc: rejects one side only, a mix with --fresh, and a missing f
   const missing = runReview(server, 'compare', '--base-appmap', one, '--head-appmap', path.join(root, 'nope.appmap.json'), '--appmap-cli', cli, '--workspace', workspace);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /Recording not found: .*nope\.appmap\.json/);
+});
+
+test('compare ad-hoc: directories and archives pair up by path, in any mix', (t) => {
+  const { root, server, workspace } = makeRepo(t);
+  const cli = `${process.execPath} ${path.join(root, 'fake-cli.mjs')}`;
+  fs.rmSync(path.join(server, 'gold_traces'), { recursive: true });
+  writeRecording(root, 'old/pytest/checkout.appmap.json', 'checkout v1');
+  writeRecording(root, 'old/pytest/login.appmap.json', 'login v1');
+  writeRecording(root, 'new/pytest/checkout.appmap.json', 'checkout v2');
+  writeRecording(root, 'new/pytest/login.appmap.json', 'login v1');
+  writeRecording(root, 'new/pytest/refund.appmap.json', 'refund v1');
+  const dirs = runReview(server, 'compare', '--base-appmap', path.join(root, 'old'), '--head-appmap', path.join(root, 'new'),
+    '--appmap-cli', cli, '--workspace', workspace);
+  assert.equal(dirs.status, 0, dirs.stderr);
+  assert.match(dirs.stdout, /Base: recordings under .*old \(2 recordings\)\n/);
+  assert.match(dirs.stdout, /Head: recordings under .*new \(3 recordings\)\n/);
+  assert.match(dirs.stdout, /Traces: 1 changed, 1 new, 0 removed\./);
+  assert.match(dirs.stdout, /changed  pytest\/checkout\n/);
+
+  // The fake CLI's archive is the JSON its `archive` command wrote; keep the base one.
+  const tar = path.join(root, 'old.tar');
+  fs.copyFileSync(path.join(workspace, 'base', '.appmap', 'archive', 'full', 'base.tar'), tar);
+  const mixed = runReview(server, 'compare', '--base-archive', tar, '--head-appmap', path.join(root, 'new'),
+    '--appmap-cli', cli, '--workspace', workspace);
+  assert.equal(mixed.status, 0, mixed.stderr);
+  assert.match(mixed.stderr, /Restoring base from .*old\.tar/);
+  assert.doesNotMatch(mixed.stderr, /Archiving base/);
+  assert.match(mixed.stdout, /Base: archive .*old\.tar \(2 recordings\)\n/);
+  assert.match(mixed.stdout, /Traces: 1 changed, 1 new, 0 removed\./);
+
+  const both = runReview(server, 'compare', '--base-archive', tar, '--head-archive', tar, '--appmap-cli', cli, '--workspace', workspace);
+  assert.equal(both.status, 0, both.stderr);
+  assert.match(both.stdout, /Traces: 0 changed, 0 new, 0 removed\./);
+});
+
+test('compare ad-hoc: rejects a file against a directory or archive, both forms on one side, and what is missing', (t) => {
+  const { root, server, workspace } = makeRepo(t);
+  const cli = `${process.execPath} ${path.join(root, 'fake-cli.mjs')}`;
+  const one = writeRecording(root, 'one.appmap.json', 'v1');
+  writeRecording(root, 'dir/one.appmap.json', 'v1');
+  fs.mkdirSync(path.join(root, 'empty'));
+  const run = (...args) => runReview(server, 'compare', ...args, '--appmap-cli', cli, '--workspace', workspace);
+  const fileAndDir = run('--base-appmap', one, '--head-appmap', path.join(root, 'dir'));
+  assert.equal(fileAndDir.status, 1);
+  assert.match(fileAndDir.stderr, /One recording file compares only with one recording file/);
+  const twice = run('--base-appmap', one, '--base-archive', one, '--head-appmap', one);
+  assert.equal(twice.status, 1);
+  assert.match(twice.stderr, /--base-appmap or --base-archive, not both/);
+  const empty = run('--base-appmap', path.join(root, 'empty'), '--head-appmap', path.join(root, 'dir'));
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /No recordings \(\.appmap\.json\) under .*empty/);
+  const noTar = run('--base-archive', path.join(root, 'nope.tar'), '--head-appmap', path.join(root, 'dir'));
+  assert.equal(noTar.status, 1);
+  assert.match(noTar.stderr, /Archive not found: .*nope\.tar/);
+});
+
+// An AppMap CLI whose compare takes two archive files: no restore step, no appmap.yml
+// needed for two recordings made by hand, and --expand passed through.
+const NEW_CLI = { FAKE_APPMAP_NEW: '1' };
+
+test('newer CLI: gold traces compare the same way, through two archive files', (t) => {
+  const { server, workspace } = makeRepo(t);
+  const result = runReview(server, NEW_CLI, 'compare', '--base', 'base', '--workspace', workspace);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /\(2 gold traces\)\n/);
+  assert.match(result.stdout, /\(3 gold traces\)\n/);
+  assert.match(result.stdout, /Traces: 1 changed, 1 new, 0 removed\./);
+  assert.match(result.stdout, /changed  pytest\/alpha\n/);
+  assert.match(result.stdout, / {11}text:    text\/pytest\/alpha\.diff\.txt\n/);
+  assert.ok(fs.existsSync(path.join(workspace, 'base.tar')) && fs.existsSync(path.join(workspace, 'head.tar')));
+  assert.ok(!fs.existsSync(path.join(workspace, 'base', '.appmap')), 'nothing is filed for a restore');
+  assert.doesNotMatch(result.stdout, /Moved blocks: shown as removed plus added/);
+});
+
+test('newer CLI: --expand reaches compare; two directories need no appmap.yml', (t) => {
+  const { root, workspace } = makeRepo(t);
+  const cli = `${process.execPath} ${path.join(root, 'fake-cli.mjs')}`;
+  const outside = path.join(root, 'no-project');
+  fs.mkdirSync(outside);
+  writeRecording(root, 'old/pytest/checkout.appmap.json', 'checkout v1');
+  writeRecording(root, 'new/pytest/checkout.appmap.json', 'checkout v2');
+  const args = ['compare', '--base-appmap', path.join(root, 'old'), '--head-appmap', path.join(root, 'new'), '--appmap-cli', cli, '--workspace', workspace];
+  const result = runReview(outside, NEW_CLI, ...args, '--expand', 'package:server,package:shared');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Lanes: one per file in package:server, package:shared\n/);
+  assert.match(result.stdout, /Traces: 1 changed, 0 new, 0 removed\./);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(workspace, 'out', 'report', 'expanded.json'), 'utf8')),
+    ['package:server', 'package:shared'],
+  );
+
+  // The older CLI cannot do either: it needs appmap.yml, and has no --expand.
+  const noYml = runReview(outside, ...args);
+  assert.equal(noYml.status, 1);
+  assert.match(noYml.stderr, /No appmap\.yml found/);
+  const { server } = makeRepo(t);
+  const noExpand = runReview(server, ...args, '--expand', 'package:server');
+  assert.equal(noExpand.status, 1);
+  assert.match(noExpand.stderr, /--expand needs an AppMap CLI whose 'compare' command has --expand/);
+});
+
+test('newer CLI: archives go to compare as they are; a missing one is named', (t) => {
+  const { root, server, workspace } = makeRepo(t);
+  const cli = `${process.execPath} ${path.join(root, 'fake-cli.mjs')}`;
+  const tar = (name, traces) => {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, JSON.stringify(traces));
+    return file;
+  };
+  const before = tar('before.tar', { 'pytest/checkout': '{"content":"v1"}' });
+  const after = tar('after.tar', { 'pytest/checkout': '{"content":"v2"}', 'pytest/refund': '{"content":"v1"}' });
+  const result = runReview(server, NEW_CLI, 'compare', '--base-archive', before, '--head-archive', after, '--appmap-cli', cli, '--workspace', workspace);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Base: archive .*before\.tar\n/);
+  assert.match(result.stdout, /Traces: 1 changed, 1 new, 0 removed\./);
+  assert.doesNotMatch(result.stderr, /Archiving/);
+  const missing = runReview(server, NEW_CLI, 'compare', '--base-archive', path.join(root, 'nope.tar'), '--head-archive', after, '--appmap-cli', cli, '--workspace', workspace);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /Archive not found: .*nope\.tar/);
+});
+
+test('--appmap-cli overrides the manifest in the gold-traces modes', (t) => {
+  const { root, server, workspace } = makeRepo(t);
+  const other = path.join(root, 'other-cli.mjs');
+  fs.writeFileSync(other, "console.error('the other CLI ran'); process.exit(7);\n");
+  const result = runReview(server, 'compare', '--base', 'base', '--appmap-cli', `${process.execPath} ${other}`, '--workspace', workspace);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /the other CLI ran/);
 });
